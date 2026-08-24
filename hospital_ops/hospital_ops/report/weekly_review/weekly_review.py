@@ -223,8 +223,10 @@ def _csr_tranche_rows() -> list[dict]:
                         state["expected_on"], state["shortfall"]
                     ),
                     "how_computed": _(
-                        "csr_financials.tranche_states() — cumulative expected against "
-                        "submitted receipts, allocated in document order."
+                        "csr_financials.tranche_states() — tranches ordered by expected_on "
+                        "then idx (the tie-break for tranches sharing a date), cumulative "
+                        "expectation compared against the project's received total "
+                        "(submitted Receipts net of Receipt Reversals)."
                     ),
                 }
             )
@@ -232,6 +234,12 @@ def _csr_tranche_rows() -> list[dict]:
 
 
 def _tranches_by_project(names: list[str]) -> dict[str, list]:
+    # get_all, not get_list — the same documented exception the Phase 3
+    # report takes for this identical query (csr_project_financials.py's
+    # _tranches_by_project): these rows are keyed to the CSR Project names
+    # `projects` above already fetched with get_list (permission-aware), so
+    # re-checking permissions per tranche row would cost a pass per row and
+    # permit nothing extra — the parent listing is what does the gating.
     rows = frappe.get_all(
         "CSR Tranche",
         filters={"parenttype": "CSR Project", "parent": ["in", names]},
