@@ -564,6 +564,16 @@ and `addDesign` had to hand-downgrade `status`, `installedOn` and
 no workflow event of its own for a *backward* move to derive from. Computing it
 on read removes the second writer entirely.
 
+**A design version is immutable once it exists** — `sign`, `version_number`,
+`content_text` and `print_ready` are all fixed at insert; only `superseded_by`
+and `supersede_reason` move, and only through `add_design`. Changed artwork is
+a *new version*. This closed a Codex audit High: the first cut guarded the
+version number and the supersede pair but not the artwork, so approve v1 →
+direct-save new `content_text` → pass Production produced a sign that was not
+the sign anybody approved, with a trail that read as though it were. Changing
+`sign` was the same defect in another hat — it re-parents a design under a sign
+whose events were validated against a design no longer there.
+
 `add_design(name, …)` locks the sign, assigns `version_number` as `max + 1`
 (a read-then-write against a count, which no unique index can substitute for),
 and requires a `supersede_reason` whenever there is a live design to replace.
@@ -636,7 +646,7 @@ the blockers of the next gate that has not cleared, every page with what a
 publication would still be missing, every project with how many requirements
 have a passing result. Listings use `frappe.get_list`, not `get_all`.
 
-Verification: `run_phase5_tests`, **109 checks, 0 failures**, everything rolled
+Verification: `run_phase5_tests`, **142 checks, 0 failures**, everything rolled
 back at the end whatever happens. Every negative carries a positive control,
 and most negatives assert the *content* of the refusal too. Covered: the
 sequence gates and their named blockers; waivers clearing a gate and their
@@ -648,9 +658,24 @@ cancel/trash refusals with a draft delete as the control; the publication gate
 including the same-day review/approval refusal and the next-day acceptance;
 the step and requirement direct-save guards; the release gate, the same-day-as-
 agreed UAT that does not count, one-shot release, and Released as terminal;
-and report/controller parity for all three areas. `run_phase2_tests` (32/32),
-`run_phase3_tests` (111/111) and `run_phase4_tests` (42/42) all re-ran clean
-after this phase's migration.
+and report/controller parity for all three areas.
+
+A second pass after the Codex audit added 33 more, most of them pinning
+behaviour that was already correct and merely unasserted — which is the kind
+that regresses silently: draft sign events counting for nothing in any gate
+(with the same row, submitted, as the control); an event naming another sign's
+design refused; waiver semantics as the documented authorised exception (a
+waived Production authorises a passing Installation; Installation is a
+prerequisite for nothing); publication-date bounding in both directions (a
+draft dated *after* a publication does not retroactively invalidate it, while
+the same draft does block the next one; a publication backdated before its
+approval is refused); both halves of the release gate's comparison frozen (a
+requirement's agreed date after a passing UAT, and a result's verdict and
+tested-on date); and the design-immutability guard before and after approval.
+
+`run_phase2_tests` (32/32), `run_phase3_tests` (111/111) and `run_phase4_tests`
+(42/42) all re-ran clean after this phase's migration and again after the audit
+fix.
 
 **Deployment note.** This install carries the app content at *two* directory
 levels — `apps/hospital_ops/hospital_ops/` (from which `hospital_ops.hooks`

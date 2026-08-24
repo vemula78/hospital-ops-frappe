@@ -91,7 +91,7 @@ sudo docker exec -u frappe -w /home/frappe/frappe-bench frappe_docker-backend-1 
   bench --site frontend execute hospital_ops.hospital_ops.tests_runner.run_phase4_tests
 ```
 
-Phase 5 (Build & Publish: signage, website, software) has its own suite, 109
+Phase 5 (Build & Publish: signage, website, software) has its own suite, 142
 checks, same shape:
 
 ```bash
