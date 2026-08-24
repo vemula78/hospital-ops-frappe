@@ -1,0 +1,47 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "followed_up_on",
+  "note",
+  "new_promised_on"
+ ],
+ "fields": [
+  {
+   "fieldname": "followed_up_on",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Followed Up On",
+   "reqd": 1
+  },
+  {
+   "fieldname": "note",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Note"
+  },
+  {
+   "fieldname": "new_promised_on",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "New Promised On"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Hospital Ops",
+ "name": "Waiting For Follow Up",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "creation",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}

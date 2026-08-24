@@ -1,0 +1,74 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:CAP-.#####",
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "capture_text",
+  "status",
+  "processed_into_doctype",
+  "processed_into"
+ ],
+ "fields": [
+  {
+   "fieldname": "capture_text",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Capture",
+   "reqd": 1
+  },
+  {
+   "default": "Open",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Open\nProcessed\nDiscarded",
+   "reqd": 1
+  },
+  {
+   "fieldname": "processed_into_doctype",
+   "fieldtype": "Link",
+   "label": "Processed Into (Doctype)",
+   "options": "DocType",
+   "read_only": 1
+  },
+  {
+   "fieldname": "processed_into",
+   "fieldtype": "Dynamic Link",
+   "label": "Processed Into",
+   "options": "processed_into_doctype",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Hospital Ops",
+ "name": "Quick Capture",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}

@@ -1,0 +1,107 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:WF-.#####",
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "waiting_on",
+  "subject",
+  "delegated_on",
+  "promised_on",
+  "follow_up_on",
+  "status",
+  "follow_ups",
+  "resolution_note"
+ ],
+ "fields": [
+  {
+   "fieldname": "waiting_on",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Waiting On",
+   "options": "Contact",
+   "reqd": 1
+  },
+  {
+   "fieldname": "subject",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Subject",
+   "reqd": 1
+  },
+  {
+   "default": "Today",
+   "fieldname": "delegated_on",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Delegated On",
+   "reqd": 1
+  },
+  {
+   "fieldname": "promised_on",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Promised On"
+  },
+  {
+   "fieldname": "follow_up_on",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Follow Up On",
+   "search_index": 1
+  },
+  {
+   "default": "Waiting",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Waiting\nResolved\nCancelled",
+   "reqd": 1
+  },
+  {
+   "fieldname": "follow_ups",
+   "fieldtype": "Table",
+   "label": "Follow Ups",
+   "options": "Waiting For Follow Up"
+  },
+  {
+   "fieldname": "resolution_note",
+   "fieldtype": "Small Text",
+   "label": "Resolution Note"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Hospital Ops",
+ "name": "Waiting For",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "follow_up_on",
+ "sort_order": "ASC",
+ "states": [],
+ "title_field": "subject",
+ "track_changes": 1
+}
