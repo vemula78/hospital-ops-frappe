@@ -41,5 +41,16 @@ sudo docker exec -u frappe -w /home/frappe/frappe-bench frappe_docker-backend-1 
   bench --site frontend execute hospital_ops.hospital_ops.tests_runner.run_phase2_tests
 ```
 
-32 invariant checks, all data rolled back regardless of outcome. Then check the
-public URL, not only the console — see above for why.
+32 invariant checks, all data rolled back regardless of outcome.
+
+Phase 3 (CSR) has its own suite, 85 checks, same rollback-always shape:
+
+```bash
+sudo docker exec -u frappe -w /home/frappe/frappe-bench frappe_docker-backend-1 \
+  bench --site frontend execute hospital_ops.hospital_ops.tests_runner.run_phase3_tests
+```
+
+Then check the public URL, not only the console — see above for why. The
+three that matter after a restart: `/api/method/ping` returns pong, `/login`
+returns 200, and `https://sssihms.org` (the hospital's public WordPress site,
+same VM) still returns 200.
