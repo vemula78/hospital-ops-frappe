@@ -73,7 +73,9 @@ from hospital_ops.hospital_ops.report.research_ethics_register.research_ethics_r
 )
 from hospital_ops.hospital_ops.research_ethics import ethics_standing
 from hospital_ops.hospital_ops.build_publish import (
+    SIGN_PREREQUISITES,
     accessibility_checklist,
+    missing_for_publication,
     sign_readiness,
     sign_status,
     uat_coverage,
@@ -1923,13 +1925,18 @@ def run_phase5_tests() -> None:
         _sign_note_and_waiver_checks()
         _sign_chronological_order_checks()
         _sign_supersede_checks()
+        _sign_design_immutability_checks()
+        _sign_draft_and_foreign_design_checks()
+        _sign_waiver_semantics_checks()
         _sign_append_only_checks()
         _sign_accessibility_checks()
         _web_publication_gate_checks()
+        _web_publication_date_bounding_checks()
         _web_step_direct_save_guard_checks()
         _software_requirement_and_uat_checks()
         _software_release_gate_checks()
         _software_release_terminal_checks()
+        _software_recorded_fact_immutability_checks()
         _build_publish_report_parity_checks()
     finally:
         frappe.db.rollback()
@@ -2243,6 +2250,171 @@ def _sign_supersede_checks() -> None:
     )
 
 
+def _sign_design_immutability_checks() -> None:
+    """Codex Phase 5 audit, High: the direct-save guard covered version_number
+    and the supersede pair but not the artwork itself, so approve v1 →
+    direct-save new content_text → pass Production produced a sign that was not
+    the sign anybody approved. A design version is now immutable after insert."""
+    sign = _sign("SYN-IMMUT-1")
+    first = add_design(sign, content_text="Cardiology — Second Floor")
+    design = first["design"]
+
+    def _edit_content():
+        doc = frappe.get_doc("Hospital Sign Design", design)
+        doc.content_text = "Cardiology — Third Floor"
+        doc.save()
+
+    message = _throws_message(
+        "design: the wording cannot be edited even before anything is approved",
+        _edit_content,
+    )
+    _check(
+        "design: the refusal says changed artwork is a new version",
+        "new version" in message,
+    )
+    _check(
+        "design: the wording is unchanged after the refused edit",
+        frappe.db.get_value("Hospital Sign Design", design, "content_text")
+        == "Cardiology — Second Floor",
+    )
+
+    # …and after approval, which is the sequence the audit named.
+    _pass_chain(sign, design)
+    _expect_throws(
+        "design: the wording cannot be edited after the design has been approved",
+        _edit_content,
+    )
+
+    def _edit_artwork():
+        doc = frappe.get_doc("Hospital Sign Design", design)
+        doc.print_ready = "/files/swapped-artwork.pdf"
+        doc.save()
+
+    _expect_throws(
+        "design: the print-ready artwork cannot be swapped under an approval",
+        _edit_artwork,
+    )
+
+    other = _sign("SYN-IMMUT-2")
+
+    def _reparent():
+        doc = frappe.get_doc("Hospital Sign Design", design)
+        doc.sign = other
+        doc.save()
+
+    _expect_throws(
+        "design: a design cannot be re-parented onto another sign — its events were "
+        "validated against it where it was",
+        _reparent,
+    )
+    _check(
+        "design: the design still belongs to its original sign after the refused re-parent",
+        frappe.db.get_value("Hospital Sign Design", design, "sign") == sign,
+    )
+
+    _check(
+        "design: Production still passes on the untouched approved design "
+        "(positive control — the guard freezes the artwork, it does not break the gate)",
+        _sign_event(
+            sign, design, "Production", occurred_on=add_days(today(), 3)
+        ).docstatus
+        == 1,
+    )
+
+    second = add_design(
+        sign, content_text="Cardiology — Third Floor", supersede_reason="Moved to third floor"
+    )
+    _check(
+        "design: changed wording goes in as a new version instead (positive control)",
+        second["version_number"] == 2
+        and frappe.db.get_value("Hospital Sign Design", second["design"], "content_text")
+        == "Cardiology — Third Floor",
+    )
+
+
+def _sign_draft_and_foreign_design_checks() -> None:
+    sign = _sign("SYN-DRAFT-1")
+    design = add_design(sign)["design"]
+
+    _sign_event(sign, design, "Content Verification", occurred_on=today())
+
+    # A draft is somebody thinking, not a step that happened — every gate reads
+    # docstatus = 1 only, exactly as the CSR ledger does.
+    draft_approval = _sign_event(
+        sign, design, "Approval", occurred_on=add_days(today(), 1), submit=False
+    )
+    _check(
+        "signage: a drafted Approval does not appear in the derived step states",
+        sign_readiness(sign)["steps"]["Approval"]["state"] == "missing",
+    )
+    _expect_throws(
+        "signage: a drafted Approval does not authorise a Print Proof",
+        lambda: _sign_event(sign, design, "Print Proof", occurred_on=add_days(today(), 2)),
+    )
+
+    draft_approval.submit()
+    _sign_event(sign, design, "Print Proof", occurred_on=add_days(today(), 2))
+    _check(
+        "signage: submitting that same Approval authorises the Print Proof "
+        "(positive control — it is the docstatus that mattered, not the row)",
+        sign_readiness(sign)["steps"]["Print Proof"]["state"] == "passed",
+    )
+
+    other = _sign("SYN-DRAFT-2")
+    other_design = add_design(other)["design"]
+    message = _throws_message(
+        "signage: an event naming a design that belongs to a different sign is refused",
+        lambda: _sign_event(sign, other_design, "Content Verification"),
+    )
+    _check(
+        "signage: the foreign-design refusal names both signs",
+        other in message and sign in message,
+    )
+    _check(
+        "signage: an event naming this sign's own design is accepted (positive control)",
+        _sign_event(other, other_design, "Content Verification").docstatus == 1,
+    )
+
+
+def _sign_waiver_semantics_checks() -> None:
+    """A waiver is the *authorised exception* — the one sanctioned way past a
+    gate — so it clears that gate exactly as a pass does, and stays in the trail
+    carrying its mandatory reason. That is deliberate, documented behaviour, and
+    it is pinned here so a later change to sign_blockers cannot quietly drop it."""
+    sign = _sign("SYN-WAIVE-1")
+    design = add_design(sign)["design"]
+    _pass_chain(sign, design)
+
+    _sign_event(
+        sign,
+        design,
+        "Production",
+        outcome="Waived",
+        occurred_on=add_days(today(), 3),
+        note="Produced in-house before this register existed; no vendor job to record",
+    )
+    _check(
+        "signage: a waived Production is a cleared gate, so installation has no blockers",
+        sign_readiness(sign)["installation_blockers"] == [],
+    )
+    _check(
+        "signage: a waived Production carries the sign to In Production, as a pass does",
+        sign_status(sign) == "In Production",
+    )
+
+    _sign_event(sign, design, "Installation", occurred_on=add_days(today(), 4))
+    _check(
+        "signage: a waived Production authorises a passing Installation (positive control)",
+        sign_status(sign) == "Installed",
+    )
+
+    _check(
+        "signage: Installation is a prerequisite for nothing — waiving it authorises no "
+        "further step, because there is no further step",
+        all("Installation" not in prereqs for prereqs in SIGN_PREREQUISITES.values()),
+    )
+
+
 def _sign_append_only_checks() -> None:
     sign = _sign("SYN-APPEND-1")
     design = add_design(sign)["design"]
@@ -2381,6 +2553,56 @@ def _web_publication_gate_checks() -> None:
         "website: the page reads Draft again after being pulled back "
         "(the latest step is the state, positive control)",
         get_page_state(page)["status"] == "Draft",
+    )
+
+
+def _web_publication_date_bounding_checks() -> None:
+    """Every publication check bounds its lookups to the publication's own
+    date. That cuts both ways, and both directions are asserted here."""
+    page = _web_page("Synthetic bounded page")
+    record_step(page, "Draft", occurred_on=today())
+    record_step(page, "Review", occurred_on=today())
+    record_step(page, "Approval", occurred_on=add_days(today(), 1))
+    record_step(page, "Publication", occurred_on=add_days(today(), 1))
+    _check(
+        "website: the page publishes with draft, review and approval in order "
+        "(positive control)",
+        get_page_state(page)["status"] == "Publication",
+    )
+
+    # A later draft moves the page's *current* state and blocks the next
+    # publication — but it must not reach back and invalidate the one that
+    # already happened, which was correct against everything on or before its
+    # own date.
+    record_step(page, "Draft", occurred_on=add_days(today(), 5))
+    steps = get_page_state(page)["steps"]
+    _check(
+        "website: a draft dated after a publication does not retroactively invalidate it",
+        missing_for_publication(steps, publish_on=add_days(today(), 1)) == [],
+    )
+    _check(
+        "website: that same later draft does block the next publication "
+        "(positive control — the bound is what differs, not the rule)",
+        missing_for_publication(steps) != [],
+    )
+
+    backdated = _web_page("Synthetic backdated page")
+    record_step(backdated, "Draft", occurred_on=today())
+    record_step(backdated, "Review", occurred_on=today())
+    record_step(backdated, "Approval", occurred_on=add_days(today(), 5))
+    message = _throws_message(
+        "website: a publication backdated before its approval is refused",
+        lambda: record_step(backdated, "Publication", occurred_on=add_days(today(), 1)),
+    )
+    _check(
+        "website: the refusal says no approval is recorded on or before that date",
+        "on or before" in message,
+    )
+    record_step(backdated, "Publication", occurred_on=add_days(today(), 5))
+    _check(
+        "website: the same publication dated on the approval day is accepted "
+        "(positive control)",
+        get_page_state(backdated)["status"] == "Publication",
     )
 
 
@@ -2624,6 +2846,79 @@ def _software_release_terminal_checks() -> None:
     _expect_throws(
         "software: releasing an Abandoned project is refused",
         lambda: record_release(abandoned),
+    )
+
+
+def _software_recorded_fact_immutability_checks() -> None:
+    """The release gate compares a passing result's date against the day the
+    requirement was agreed. Both halves of that comparison have to be fixed, or
+    the gate can be satisfied after the fact by editing either one."""
+    project = _software("Synthetic immutability project")
+    requirement = add_requirement(project, "Referral letter carries the clinic code")[
+        "requirement"
+    ]
+    result = record_uat_result(
+        project, requirement, "Passed", tested_on=add_days(today(), 1)
+    )["name"]
+    _check(
+        "software: the requirement is covered before anything is tampered with "
+        "(positive control)",
+        len(uat_coverage(project)["covered"]) == 1,
+    )
+
+    def _edit_agreed_on():
+        doc = frappe.get_doc("Software Project Record", project)
+        doc.requirements[0].agreed_on = add_days(today(), 30)
+        doc.save()
+
+    _expect_throws(
+        "software: a requirement's agreed date cannot be edited after a passing UAT",
+        _edit_agreed_on,
+    )
+    _check(
+        "software: the requirement is still covered after the refused edit — the gate "
+        "cannot be un-satisfied by moving the goalposts either",
+        len(uat_coverage(project)["covered"]) == 1,
+    )
+
+    def _edit_result():
+        doc = frappe.get_doc("Software UAT Result", result)
+        doc.result = "Failed"
+        doc.note = "Actually it never worked"
+        doc.save()
+
+    message = _throws_message(
+        "software: a recorded UAT verdict cannot be edited", _edit_result
+    )
+    _check(
+        "software: the refusal says to record a further result instead",
+        "further result" in message,
+    )
+
+    def _edit_tested_on():
+        doc = frappe.get_doc("Software UAT Result", result)
+        doc.tested_on = add_days(today(), 60)
+        doc.save()
+
+    _expect_throws(
+        "software: a UAT result's tested-on date cannot be edited — it is half of the "
+        "release gate's comparison",
+        _edit_tested_on,
+    )
+    _check(
+        "software: the stored verdict and date are unchanged after both refusals",
+        frappe.db.get_value("Software UAT Result", result, "result") == "Passed"
+        and str(frappe.db.get_value("Software UAT Result", result, "tested_on"))
+        == str(add_days(today(), 1)),
+    )
+    _check(
+        "software: a further result records normally (positive control — corrections go "
+        "in as new rows, not edits)",
+        record_uat_result(
+            project, requirement, "Failed", tested_on=add_days(today(), 2),
+            note="Regressed in the next build",
+        )["result"]
+        == "Failed",
     )
 
 
