@@ -1468,6 +1468,7 @@ def run_phase4_tests() -> None:
     _FAIL.clear()
     try:
         _research_milestone_checks()
+        _research_milestone_direct_save_guard_checks()
         _research_ethics_decision_checks()
         _research_ethics_state_machine_checks()
         _research_ethics_standing_checks()
@@ -1576,6 +1577,98 @@ def _research_milestone_checks() -> None:
     _check(
         "milestone: completion on an Active study is accepted (positive control)",
         str(active_doc.milestones[0].completed_on) == today(),
+    )
+
+
+def _research_milestone_direct_save_guard_checks() -> None:
+    """Codex Phase 4 audit, High: nothing stopped a direct parent save from
+    setting a milestone's completed_on itself, bypassing complete_milestone's
+    once-only rule and its Terminated/Completed refusal entirely — the same
+    class of gap as Phase 2's P3-2. validate() now guards it."""
+    study = _study(
+        "Direct-save guard checks",
+        milestones=[{"description": "Guarded milestone", "due_on": today()}],
+    )
+    doc = frappe.get_doc("Research Study", study)
+    row_name = doc.milestones[0].name
+
+    doc.milestones[0].completed_on = today()
+    _expect_throws(
+        "milestone guard: a direct save flipping completed_on (empty -> set) is refused",
+        doc.save,
+    )
+    doc.reload()
+    _check(
+        "milestone guard: and nothing was written",
+        doc.milestones[0].completed_on is None,
+    )
+
+    complete_milestone(study, row_name)
+    doc.reload()
+    _check(
+        "milestone guard: complete_milestone itself still works after the guard "
+        "(positive control)",
+        str(doc.milestones[0].completed_on) == today(),
+    )
+
+    doc.milestones[0].completed_on = None
+    _expect_throws(
+        "milestone guard: a direct save clearing a stored completed_on is refused",
+        doc.save,
+    )
+    doc.reload()
+    _check(
+        "milestone guard: and the completion survived the attempt",
+        str(doc.milestones[0].completed_on) == today(),
+    )
+
+    doc.milestones = [m for m in doc.milestones if m.name != row_name]
+    _expect_throws(
+        "milestone guard: deleting a completed milestone row is refused — that "
+        "would erase completion history",
+        doc.save,
+    )
+    doc.reload()
+    _check(
+        "milestone guard: the completed row is still present",
+        any(m.name == row_name for m in doc.milestones),
+    )
+
+    doc.append("milestones", {"description": "A second, incomplete milestone", "due_on": today()})
+    doc.save()
+    doc.reload()
+    _check(
+        "milestone guard: adding a new incomplete milestone via a normal save still "
+        "works (positive control)",
+        len(doc.milestones) == 2
+        and any(m.description == "A second, incomplete milestone" for m in doc.milestones),
+    )
+
+    new_row_name = next(
+        m.name for m in doc.milestones if m.description == "A second, incomplete milestone"
+    )
+    doc.milestones = [m for m in doc.milestones if m.name != new_row_name]
+    doc.save()
+    doc.reload()
+    _check(
+        "milestone guard: removing an incomplete milestone via a normal save still "
+        "works (positive control)",
+        len(doc.milestones) == 1,
+    )
+
+    forged = frappe.get_doc(
+        {
+            "doctype": "Research Study",
+            "study_title": "Born with a forged completion",
+            "status": "Active",
+            "milestones": [
+                {"description": "Forged at birth", "due_on": today(), "completed_on": today()}
+            ],
+        }
+    )
+    _expect_throws(
+        "milestone guard: a study cannot be created with a milestone already completed",
+        forged.insert,
     )
 
 

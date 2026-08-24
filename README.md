@@ -490,6 +490,26 @@ The report lists studies with `frappe.get_list` (permission-aware — the
 Phase 3 P2-b lesson) and shows, per study: standing, latest submission, valid
 until, and days-to-expiry (negative = already expired).
 
+`as_of` defaults to the **site's** timezone (`frappe.utils.today()`,
+Asia/Kolkata here), not a per-workspace timezone the way the reference
+`research.ts` computed it — acceptable for this single-site deployment, but
+a future multi-timezone deployment would need to revisit it.
+
+#### Milestone completion cannot be forged by a direct save
+
+Codex's Phase 4 audit found that nothing stopped a caller from loading the
+Research Study, setting a milestone row's `completed_on` directly and
+calling `doc.save()` — the once-only rule and the Terminated/Completed
+refusal both lived only in `complete_milestone`, the same class of gap as
+Phase 2's P3-2. `ResearchStudy.validate()` now compares every milestone row
+against the document's pre-save state (`get_doc_before_save()`) and refuses
+any change to `completed_on` unless `self.flags.completing_milestone` is
+set — a flag only `complete_milestone` sets. A study cannot be *created*
+with a milestone already completed either. Adding or removing an
+*incomplete* milestone stays unguarded, since editing the plan is normal
+use; deleting a row that was already completed is refused outright, because
+that erases completion history.
+
 #### Tests
 
 ```bash

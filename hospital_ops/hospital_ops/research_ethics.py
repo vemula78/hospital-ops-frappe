@@ -27,6 +27,14 @@ One function. The Research Study form/report and any future notification all
 call this rather than each re-deriving it, for the same reason
 ``csr_financials.totals_from_kind_rows`` is the only place ledger rows become
 figures: a second implementation is how two views of the same study disagree.
+
+**Timezone note (Codex Phase 4 audit, low):** ``as_of`` defaults to
+``frappe.utils.today()``, i.e. the **site's** timezone (Asia/Kolkata for this
+single-site deployment), not a per-workspace timezone the way the reference
+``research.ts`` computed it. That is deliberate and acceptable here because
+this site has exactly one timezone; a future multi-timezone deployment of
+this app would need to revisit ``as_of`` to take a caller-supplied timezone
+rather than trusting the site default.
 """
 
 import frappe
