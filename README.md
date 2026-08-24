@@ -421,6 +421,89 @@ block, everything rolled back at the end whatever happens. `run_phase2_tests`
 still reports 32 passed / 0 failed, and `bench run-tests --app hospital_ops
 --doctype "Quick Capture"` still passes 5 of 5.
 
+### Phase 4 — Research
+
+A port of the Next.js application's `research.ts` study/milestone/ethics
+slice — **done, 24-Aug-2026**. Three doctypes, module `Hospital Ops`, `System
+Manager` only.
+
+| Doctype | Naming | Kind | What it is |
+| --- | --- | --- | --- |
+| `Research Study` | `RSTU-#####` | normal | The study, administratively — title, investigator name, department, status, a `milestones` child table |
+| `Research Study Milestone` | — | child | One milestone: description, due date, completed date |
+| `Research Ethics Submission` | `RETH-#####` | normal | One submission to a committee and its decision |
+
+**§4.3 is the sharpest rule here.** `principal_investigator` is free-text
+`Data`, deliberately not a Link to any person/patient record. There is no
+participant table anywhere in this module, and `data_boundary.py`'s
+`find_participant_identifier_fields()` scans every `DocField` and `Custom
+Field` on every doctype in module `Hospital Ops` for
+`participant|patient|mrn|diagnos|consent|enrol|subject_id`, case-insensitive
+— asserted at zero in the test suite, with a positive control proving the
+scan itself works (an unfiltered pass matches the installed `healthcare`
+app's `Patient` fields).
+
+#### Milestones complete once, following the Phase 2 lesson exactly
+
+`complete_milestone(name, row_name)` locks the **child row** itself
+(`for_update=True` on `Research Study Milestone`, not the parent) before
+deciding whether `completed_on` is already set — the Phase 2 P2-2 lesson: a
+lock on the parent and a plain re-read of the child afterwards can still
+serve a pre-lock snapshot under REPEATABLE READ. Completion is refused
+outright on a `Terminated` or `Completed` study.
+
+#### The ethics decision is one-shot; renewal is a new row
+
+`record_decision(name, decision, decided_on=None, decision_reference=None,
+valid_until=None, decision_note=None)` takes a locked read of its own
+`decision` before deciding there is anything left to decide, refuses unless
+still `Pending` (naming the decision and date already recorded), requires
+`valid_until` on `Approved` (an approval that never expires is how renewals
+get missed) and `decision_note` on `Rejected`.
+
+`validate()` enforces the same state machine server-side — the Phase 2 P3-2
+lesson that `read_only` in the JSON is a UI hint only:
+
+- A submission cannot be **created** already decided.
+- Once it exists, `decision`/`decided_on`/`decision_reference`/`valid_until`/
+  `decision_note` cannot move by a direct save; only `record_decision` (via
+  its own internal flag) may set them.
+
+A renewal is a **new** `Research Ethics Submission` row, never an edit to the
+old one — the same "every submission is a row" decision the reference
+`research.ts` made, ported unchanged.
+
+#### Ethics standing is derived, never stored
+
+`research_ethics.ethics_standing(study, as_of=None)` is the single function
+that turns a study's submission rows into one of four states — `approved`,
+`pending`, `expired`, `none` — and nothing is stored. Precedence is the
+point: **`pending` is checked before `expired`**, which is what makes the
+renewal path work — a study whose old approval lapsed but which has since
+filed a fresh submission reads `pending`, not `expired`-and-forgotten. Both
+the whitelisted `get_study_standing(name)` (read-only) and the **Research
+Ethics Register** report call this one function, so the study form and the
+desk report cannot show different standings for the same study — the same
+"one function, two callers" shape as `csr_financials.totals_from_kind_rows`.
+
+The report lists studies with `frappe.get_list` (permission-aware — the
+Phase 3 P2-b lesson) and shows, per study: standing, latest submission, valid
+until, and days-to-expiry (negative = already expired).
+
+#### Tests
+
+```bash
+bench --site frontend execute hospital_ops.hospital_ops.tests_runner.run_phase4_tests
+```
+
+**32 passed, 0 failed** on the live site: milestone completion (once, twice,
+wrong row, Terminated/Completed/Active study), the ethics decision one-shot
+pattern and its state machine, the full standing lifecycle (none → pending →
+approved → expired, then a fresh renewal reading pending again), report/
+standing parity across a set of studies, and the §4.3 scan with its positive
+control. `run_phase2_tests` (32/32) and `run_phase3_tests` (111/111) both
+re-ran clean after this phase's migration, confirming no regression.
+
 ### Contributing
 
 This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:

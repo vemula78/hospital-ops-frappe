@@ -1531,7 +1531,7 @@ def _research_milestone_checks() -> None:
     doc.reload()
     _check(
         "milestone: complete_milestone stamps today's date (positive control)",
-        doc.milestones[0].completed_on == today() and result["completed_on"] == str(today()),
+        str(doc.milestones[0].completed_on) == today() and result["completed_on"] == str(today()),
     )
 
     message = _throws_message(
@@ -1575,7 +1575,7 @@ def _research_milestone_checks() -> None:
     active_doc.reload()
     _check(
         "milestone: completion on an Active study is accepted (positive control)",
-        active_doc.milestones[0].completed_on == today(),
+        str(active_doc.milestones[0].completed_on) == today(),
     )
 
 

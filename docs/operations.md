@@ -50,7 +50,17 @@ sudo docker exec -u frappe -w /home/frappe/frappe-bench frappe_docker-backend-1 
   bench --site frontend execute hospital_ops.hospital_ops.tests_runner.run_phase3_tests
 ```
 
+Phase 4 (Research) has its own suite, 32 checks, same shape, including the
+§4.3 participant-identifier scan with its positive control:
+
+```bash
+sudo docker exec -u frappe -w /home/frappe/frappe-bench frappe_docker-backend-1 \
+  bench --site frontend execute hospital_ops.hospital_ops.tests_runner.run_phase4_tests
+```
+
 Then check the public URL, not only the console — see above for why. The
-three that matter after a restart: `/api/method/ping` returns pong, `/login`
-returns 200, and `https://sssihms.org` (the hospital's public WordPress site,
-same VM) still returns 200.
+four that matter after a restart: `/api/method/ping` returns pong, `/login`
+returns 200, `/app/research-study` resolves 200 (following the redirect —
+an unauthenticated request 301s to `/login` first, which is expected), and
+`https://sssihms.org` (the hospital's public WordPress site, same VM) still
+returns 200.
