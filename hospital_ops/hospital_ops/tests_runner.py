@@ -72,6 +72,28 @@ from hospital_ops.hospital_ops.report.research_ethics_register.research_ethics_r
     execute as research_report_execute,
 )
 from hospital_ops.hospital_ops.research_ethics import ethics_standing
+from hospital_ops.hospital_ops.build_publish import (
+    accessibility_checklist,
+    sign_readiness,
+    sign_status,
+    uat_coverage,
+)
+from hospital_ops.hospital_ops.doctype.hospital_sign.hospital_sign import (
+    add_design,
+    record_accessibility_check,
+)
+from hospital_ops.hospital_ops.doctype.hospital_web_page.hospital_web_page import (
+    get_page_state,
+    record_step,
+)
+from hospital_ops.hospital_ops.doctype.software_project_record.software_project_record import (
+    add_requirement,
+    record_release,
+    record_uat_result,
+)
+from hospital_ops.hospital_ops.report.build_and_publish_status.build_and_publish_status import (
+    execute as build_publish_report_execute,
+)
 
 _PASS = []
 _FAIL = []
@@ -1880,3 +1902,803 @@ def _research_participant_identifier_guard_check() -> None:
     )
     if hospital_ops_matches:
         print("data boundary violations:", hospital_ops_matches)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — Build & Publish (signage, website, software)
+# ---------------------------------------------------------------------------
+#
+# Same shape as Phases 2, 3 and 4: plain assertions, every negative carrying a
+# positive control, everything rolled back at the end. This phase is
+# gate-heavy, so most negatives assert the *content* of the refusal too — a
+# refusal that does not name the missing prerequisite leaves the user guessing,
+# and the thing they guess is usually to record the step somewhere else.
+
+
+def run_phase5_tests() -> None:
+    _PASS.clear()
+    _FAIL.clear()
+    try:
+        _sign_sequence_gate_checks()
+        _sign_note_and_waiver_checks()
+        _sign_chronological_order_checks()
+        _sign_supersede_checks()
+        _sign_append_only_checks()
+        _sign_accessibility_checks()
+        _web_publication_gate_checks()
+        _web_step_direct_save_guard_checks()
+        _software_requirement_and_uat_checks()
+        _software_release_gate_checks()
+        _software_release_terminal_checks()
+        _build_publish_report_parity_checks()
+    finally:
+        frappe.db.rollback()
+
+    print(f"\n{len(_PASS)} passed, {len(_FAIL)} failed")
+    if _FAIL:
+        frappe.throw(f"Failures: {_FAIL}")
+
+
+# -- fixtures ---------------------------------------------------------------
+
+
+def _sign(reference: str, **extra) -> str:
+    return (
+        frappe.get_doc(
+            {
+                "doctype": "Hospital Sign",
+                "reference": reference,
+                "purpose": extra.pop("purpose", "Synthetic wayfinding sign"),
+                "building": extra.pop("building", "Block A"),
+                "floor": extra.pop("floor", "Ground"),
+                **extra,
+            }
+        )
+        .insert()
+        .name
+    )
+
+
+def _sign_event(sign, design, step, outcome="Passed", occurred_on=None, note=None, submit=True):
+    doc = frappe.get_doc(
+        {
+            "doctype": "Hospital Sign Event",
+            "sign": sign,
+            "design": design,
+            "step": step,
+            "outcome": outcome,
+            "occurred_on": occurred_on or today(),
+            "note": note,
+        }
+    )
+    doc.insert()
+    if submit:
+        doc.submit()
+    return doc
+
+
+def _pass_chain(sign, design, start_offset=0):
+    """Content Verification → Approval → Print Proof, each a day apart."""
+    for index, step in enumerate(("Content Verification", "Approval", "Print Proof")):
+        _sign_event(sign, design, step, occurred_on=add_days(today(), start_offset + index))
+
+
+def _web_page(title: str) -> str:
+    return (
+        frappe.get_doc(
+            {"doctype": "Hospital Web Page", "page_title": title, "url_path": "/synthetic"}
+        )
+        .insert()
+        .name
+    )
+
+
+def _software(title: str, **extra) -> str:
+    return (
+        frappe.get_doc(
+            {"doctype": "Software Project Record", "project_title": title, **extra}
+        )
+        .insert()
+        .name
+    )
+
+
+# -- signage ----------------------------------------------------------------
+
+
+def _sign_sequence_gate_checks() -> None:
+    """SIG-002's existence gate: a step passes only when everything before it
+    has cleared for the current design, and the refusal names what is missing."""
+    sign = _sign("SYN-SEQ-1")
+    first = add_design(sign)
+    _check(
+        "signage: the first design is version 1 and needs no supersede reason "
+        "(positive control)",
+        first["version_number"] == 1 and first["superseded"] is None,
+    )
+    _check(
+        "signage: a sign with no cleared steps derives status Planned",
+        sign_status(sign) == "Planned",
+    )
+
+    message = _throws_message(
+        "signage: a passing Production before anything else is refused",
+        lambda: _sign_event(sign, first["design"], "Production"),
+    )
+    for missing in ("Content Verification", "Approval", "Print Proof"):
+        _check(
+            f"signage: the Production refusal names the missing {missing} step",
+            missing in message,
+        )
+    _check(
+        "signage: the Production refusal says the prerequisite was not recorded",
+        "Not recorded" in message,
+    )
+
+    _expect_throws(
+        "signage: a passing Approval before Content Verification is refused",
+        lambda: _sign_event(sign, first["design"], "Approval"),
+    )
+    _expect_throws(
+        "signage: a passing Installation before Production is refused",
+        lambda: _sign_event(sign, first["design"], "Installation"),
+    )
+
+    _sign_event(sign, first["design"], "Content Verification", occurred_on=add_days(today(), 0))
+    _check(
+        "signage: Content Verification passes with nothing before it (positive control)",
+        sign_readiness(sign)["steps"]["Content Verification"]["state"] == "passed",
+    )
+    _sign_event(sign, first["design"], "Approval", occurred_on=add_days(today(), 1))
+    _sign_event(sign, first["design"], "Print Proof", occurred_on=add_days(today(), 2))
+    _check(
+        "signage: with the chain cleared there are no production blockers",
+        sign_readiness(sign)["production_blockers"] == [],
+    )
+
+    _sign_event(sign, first["design"], "Production", occurred_on=add_days(today(), 3))
+    _check(
+        "signage: Production passes once the chain is cleared (positive control), and "
+        "status derives to In Production",
+        sign_status(sign) == "In Production",
+    )
+
+    _sign_event(sign, first["design"], "Installation", occurred_on=add_days(today(), 4))
+    _check(
+        "signage: Installation passes after Production and status derives to Installed",
+        sign_status(sign) == "Installed",
+    )
+
+
+def _sign_note_and_waiver_checks() -> None:
+    sign = _sign("SYN-NOTE-1")
+    design = add_design(sign)["design"]
+
+    _expect_throws(
+        "signage: a Failed step with no note is refused",
+        lambda: _sign_event(sign, design, "Content Verification", outcome="Failed"),
+    )
+    _expect_throws(
+        "signage: a Waived step with no note is refused",
+        lambda: _sign_event(sign, design, "Content Verification", outcome="Waived"),
+    )
+
+    _sign_event(
+        sign, design, "Content Verification", outcome="Failed", note="Ward name misspelt"
+    )
+    _check(
+        "signage: a Failed step with a note is recorded (positive control) and does not clear",
+        sign_readiness(sign)["steps"]["Content Verification"]["state"] == "failed",
+    )
+    _expect_throws(
+        "signage: Approval is still refused while Content Verification stands failed",
+        lambda: _sign_event(sign, design, "Approval"),
+    )
+
+    _sign_event(
+        sign,
+        design,
+        "Content Verification",
+        outcome="Waived",
+        note="Wording carried over verbatim from the approved v0 sign",
+    )
+    _check(
+        "signage: a Waived step with a note clears the gate the way a pass does",
+        sign_readiness(sign)["steps"]["Content Verification"]["state"] == "waived",
+    )
+    _sign_event(sign, design, "Approval")
+    _check(
+        "signage: Approval passes on the strength of a waiver (positive control)",
+        sign_readiness(sign)["steps"]["Approval"]["state"] == "passed",
+    )
+
+
+def _sign_chronological_order_checks() -> None:
+    """SIG-002's chronological half — sequenceViolation in the reference. An
+    approval dated after a production event is indistinguishable, once
+    recorded, from a correctly sequenced pair."""
+    sign = _sign("SYN-ORDER-1")
+    design = add_design(sign)["design"]
+
+    _sign_event(sign, design, "Content Verification", occurred_on=add_days(today(), 5))
+
+    message = _throws_message(
+        "signage: an Approval dated before the Content Verification it depends on is refused",
+        lambda: _sign_event(sign, design, "Approval", occurred_on=add_days(today(), 3)),
+    )
+    _check(
+        "signage: the order refusal names both dates",
+        str(add_days(today(), 3)) in message and str(add_days(today(), 5)) in message,
+    )
+
+    _sign_event(sign, design, "Approval", occurred_on=add_days(today(), 5))
+    _check(
+        "signage: an Approval on the same day as the verification is accepted "
+        "(positive control — only strictly-before is refused)",
+        sign_readiness(sign)["steps"]["Approval"]["state"] == "passed",
+    )
+
+    _expect_throws(
+        "signage: a Print Proof dated before its Approval is refused",
+        lambda: _sign_event(sign, design, "Print Proof", occurred_on=add_days(today(), 4)),
+    )
+    _sign_event(sign, design, "Print Proof", occurred_on=add_days(today(), 6))
+    _expect_throws(
+        "signage: Production dated before the Print Proof it depends on is refused",
+        lambda: _sign_event(sign, design, "Production", occurred_on=add_days(today(), 5)),
+    )
+    _sign_event(sign, design, "Production", occurred_on=add_days(today(), 7))
+    _check(
+        "signage: Production dated after every prerequisite is accepted (positive control)",
+        sign_status(sign) == "In Production",
+    )
+
+
+def _sign_supersede_checks() -> None:
+    sign = _sign("SYN-SUP-1")
+    v1 = add_design(sign)["design"]
+    _pass_chain(sign, v1)
+    _check(
+        "signage: v1 is ready for production before it is superseded (positive control)",
+        sign_readiness(sign)["production_blockers"] == [],
+    )
+
+    _expect_throws(
+        "signage: adding a second design without a supersede reason is refused",
+        lambda: add_design(sign, content_text="v2 wording"),
+    )
+
+    result = add_design(sign, content_text="v2 wording", supersede_reason="Department renamed")
+    v2 = result["design"]
+    _check(
+        "signage: the second design is version 2 and supersedes version 1",
+        result["version_number"] == 2 and result["superseded_version"] == 1,
+    )
+    _check(
+        "signage: the supersede notice says approvals do not carry forward",
+        "do not carry forward" in result["notice"],
+    )
+    _check(
+        "signage: v1's supersede reason is stored on the superseded design",
+        frappe.db.get_value("Hospital Sign Design", v1, "supersede_reason") == "Department renamed",
+    )
+
+    readiness = sign_readiness(sign)
+    _check(
+        "signage: v1's approval reads for_an_older_design against v2",
+        readiness["steps"]["Approval"]["state"] == "for_an_older_design",
+    )
+    message = _throws_message(
+        "signage: Production on v2 is refused — v1's approvals do not authorise it",
+        lambda: _sign_event(sign, v2, "Production"),
+    )
+    _check(
+        "signage: the refusal explains the steps were against a superseded design",
+        "superseded" in message,
+    )
+
+    not_current = _throws_message(
+        "signage: a passing Production naming the superseded v1 is refused outright",
+        lambda: _sign_event(sign, v1, "Production"),
+    )
+    _check(
+        "signage: the not-current-design refusal names the current version",
+        "version 2" in not_current,
+    )
+    _expect_throws(
+        "signage: a passing Installation naming the superseded v1 is refused too",
+        lambda: _sign_event(sign, v1, "Installation"),
+    )
+
+    failed = _sign_event(
+        sign, v1, "Production", outcome="Failed", note="Print shop rejected the old artwork"
+    )
+    _check(
+        "signage: a FAILED Production on the superseded v1 is still recordable "
+        "(positive control — the record may need to say the old design failed)",
+        failed.docstatus == 1,
+    )
+
+    _expect_throws(
+        "signage: a design cannot be inserted directly, bypassing add_design",
+        lambda: frappe.get_doc(
+            {"doctype": "Hospital Sign Design", "sign": sign, "version_number": 99}
+        ).insert(),
+    )
+
+    superseded_sign = _sign("SYN-SUP-2")
+    s_v1 = add_design(superseded_sign)["design"]
+    _pass_chain(superseded_sign, s_v1)
+    _sign_event(superseded_sign, s_v1, "Production", occurred_on=add_days(today(), 3))
+    _sign_event(superseded_sign, s_v1, "Installation", occurred_on=add_days(today(), 4))
+    _check(
+        "signage: the sign reads Installed before the supersede (positive control)",
+        sign_status(superseded_sign) == "Installed",
+    )
+    add_design(superseded_sign, supersede_reason="Corrected department name")
+    _check(
+        "signage: superseding an installed design drops the derived status back to Planned "
+        "— nothing to hand-downgrade, because the status was never stored",
+        sign_status(superseded_sign) == "Planned",
+    )
+
+
+def _sign_append_only_checks() -> None:
+    sign = _sign("SYN-APPEND-1")
+    design = add_design(sign)["design"]
+    submitted = _sign_event(sign, design, "Content Verification")
+
+    _expect_throws(
+        "signage: a submitted sign event cannot be cancelled",
+        lambda: frappe.get_doc("Hospital Sign Event", submitted.name).cancel(),
+    )
+    _expect_throws(
+        "signage: a submitted sign event cannot be deleted",
+        lambda: frappe.delete_doc("Hospital Sign Event", submitted.name),
+    )
+    _check(
+        "signage: the submitted event is still there after both refusals",
+        frappe.db.get_value("Hospital Sign Event", submitted.name, "docstatus") == 1,
+    )
+
+    draft = _sign_event(sign, design, "Approval", submit=False)
+    frappe.delete_doc("Hospital Sign Event", draft.name)
+    _check(
+        "signage: a draft sign event deletes normally (positive control — a draft "
+        "counts for nothing in any gate)",
+        not frappe.db.exists("Hospital Sign Event", draft.name),
+    )
+
+
+def _sign_accessibility_checks() -> None:
+    sign = _sign("SYN-ACC-1")
+    design = add_design(sign)["design"]
+
+    _expect_throws(
+        "accessibility: a Not Met verdict with no note is refused",
+        lambda: record_accessibility_check(sign, "Contrast", "Not Met", design=design),
+    )
+    _expect_throws(
+        "accessibility: a Not Applicable verdict with no note is refused",
+        lambda: record_accessibility_check(sign, "Multilingual", "Not Applicable", design=design),
+    )
+
+    record_accessibility_check(sign, "Readability", "Met", design=design)
+    _check(
+        "accessibility: a Met verdict needs no note (positive control)",
+        accessibility_checklist(sign)["met"] == 1,
+    )
+
+    message = _throws_message(
+        "accessibility: a second verdict for the same criterion, design and day is refused",
+        lambda: record_accessibility_check(sign, "Readability", "Met", design=design),
+    )
+    _check(
+        "accessibility: the duplicate refusal says to record the correction on the day "
+        "it was re-checked",
+        "re-checked" in message,
+    )
+
+    record_accessibility_check(
+        sign, "Readability", "Not Met", design=design, checked_on=add_days(today(), 1),
+        note="Reads badly under the new corridor lighting",
+    )
+    checklist = accessibility_checklist(sign)
+    _check(
+        "accessibility: a later verdict on a different day supersedes the earlier one "
+        "(positive control)",
+        checklist["not_met"] == 1 and checklist["met"] == 0,
+    )
+    _check(
+        "accessibility: the five criteria nobody judged read Not Checked, never Met",
+        checklist["not_checked"] == 5 and checklist["complete"] is False,
+    )
+
+
+# -- website ----------------------------------------------------------------
+
+
+def _web_publication_gate_checks() -> None:
+    page = _web_page("Synthetic outpatient timings")
+    _check(
+        "website: a page with no steps derives status Not Started",
+        get_page_state(page)["status"] == "Not Started",
+    )
+
+    message = _throws_message(
+        "website: Publication with nothing recorded is refused",
+        lambda: record_step(page, "Publication"),
+    )
+    for missing in ("No draft", "No review", "No approval"):
+        _check(f"website: the refusal names that there is {missing.lower()}", missing in message)
+
+    record_step(page, "Draft", occurred_on=today())
+    _check("website: the latest step is the state", get_page_state(page)["status"] == "Draft")
+    _expect_throws(
+        "website: Publication with only a draft is refused",
+        lambda: record_step(page, "Publication"),
+    )
+
+    record_step(page, "Review", occurred_on=today())
+    _check(
+        "website: a review dated on the same day as the draft is accepted "
+        "(positive control — on/after the latest draft)",
+        get_page_state(page)["status"] == "Review",
+    )
+    _expect_throws(
+        "website: Publication with a draft and a review but no approval is refused",
+        lambda: record_step(page, "Publication"),
+    )
+
+    record_step(page, "Approval", occurred_on=today())
+    same_day = _throws_message(
+        "website: Publication is refused when the review and the approval share a date",
+        lambda: record_step(page, "Publication"),
+    )
+    _check(
+        "website: the same-date refusal explains a shared date cannot show the order",
+        "shared date" in same_day,
+    )
+
+    record_step(page, "Approval", occurred_on=add_days(today(), 1))
+    _check(
+        "website: an approval dated the day after the review is accepted (positive control)",
+        get_page_state(page)["publication_blockers"] == [],
+    )
+    record_step(page, "Publication", occurred_on=add_days(today(), 1))
+    _check(
+        "website: Publication succeeds once draft, review and approval are in order",
+        get_page_state(page)["status"] == "Publication",
+    )
+
+    record_step(page, "Draft", occurred_on=add_days(today(), 2))
+    stale = _throws_message(
+        "website: a later draft makes the review and approval stale, refusing republication",
+        lambda: record_step(page, "Publication", occurred_on=add_days(today(), 3)),
+    )
+    _check("website: the staleness refusal says a later draft was recorded", "stale" in stale)
+    _check(
+        "website: the page reads Draft again after being pulled back "
+        "(the latest step is the state, positive control)",
+        get_page_state(page)["status"] == "Draft",
+    )
+
+
+def _web_step_direct_save_guard_checks() -> None:
+    """The publication gate lives in record_step; a step typed into the grid
+    would bypass it entirely. Same class of gap as Phase 4's milestone
+    direct-save finding."""
+    page = _web_page("Synthetic guard page")
+
+    def _append_directly():
+        doc = frappe.get_doc("Hospital Web Page", page)
+        doc.append("steps", {"step": "Publication", "occurred_on": today()})
+        doc.save()
+
+    _expect_throws(
+        "website: a step appended by a direct save is refused", _append_directly
+    )
+    _check(
+        "website: nothing was written by the refused direct save",
+        get_page_state(page)["steps"] == [],
+    )
+
+    record_step(page, "Draft")
+    _check(
+        "website: record_step writes the step (positive control — the guard blocks the "
+        "bypass, not the sanctioned path)",
+        len(get_page_state(page)["steps"]) == 1,
+    )
+
+    def _edit_directly():
+        doc = frappe.get_doc("Hospital Web Page", page)
+        doc.steps[0].note = "quietly rewritten"
+        doc.save()
+
+    _expect_throws("website: editing a recorded step by a direct save is refused", _edit_directly)
+
+    def _delete_directly():
+        doc = frappe.get_doc("Hospital Web Page", page)
+        doc.steps = []
+        doc.save()
+
+    _expect_throws("website: deleting a recorded step by a direct save is refused", _delete_directly)
+
+    _expect_throws(
+        "website: a page cannot be created with steps already on it",
+        lambda: frappe.get_doc(
+            {
+                "doctype": "Hospital Web Page",
+                "page_title": "Born published",
+                "steps": [{"step": "Publication", "occurred_on": today()}],
+            }
+        ).insert(),
+    )
+
+
+# -- software ---------------------------------------------------------------
+
+
+def _software_requirement_and_uat_checks() -> None:
+    project = _software("Synthetic UAT project")
+    requirement = add_requirement(project, "Ward list filters by consultant")["requirement"]
+    _check(
+        "software: add_requirement writes the row with its agreed date (positive control)",
+        frappe.db.get_value("Software Requirement Item", requirement, "agreed_on") is not None,
+    )
+
+    def _append_directly():
+        doc = frappe.get_doc("Software Project Record", project)
+        doc.append("requirements", {"description": "Snuck in", "agreed_on": today()})
+        doc.save()
+
+    _expect_throws(
+        "software: a requirement appended by a direct save is refused", _append_directly
+    )
+
+    def _edit_directly():
+        doc = frappe.get_doc("Software Project Record", project)
+        doc.requirements[0].description = "Quietly reworded after it passed"
+        doc.save()
+
+    _expect_throws("software: rewording an agreed requirement is refused", _edit_directly)
+
+    _expect_throws(
+        "software: a UAT result cannot be inserted directly, bypassing record_uat_result",
+        lambda: frappe.get_doc(
+            {
+                "doctype": "Software UAT Result",
+                "software_project": project,
+                "requirement": requirement,
+                "tested_on": today(),
+                "result": "Passed",
+            }
+        ).insert(),
+    )
+    _expect_throws(
+        "software: a Failed UAT result with no note is refused",
+        lambda: record_uat_result(project, requirement, "Failed"),
+    )
+    _expect_throws(
+        "software: a UAT result against another project's requirement row is refused",
+        lambda: record_uat_result(project, "not-a-real-row", "Passed"),
+    )
+
+    result = record_uat_result(
+        project, requirement, "Failed", note="Filter returns every consultant"
+    )
+    _check(
+        "software: a Failed UAT result with a note is recorded (positive control)",
+        frappe.db.get_value("Software UAT Result", result["name"], "result") == "Failed",
+    )
+
+
+def _software_release_gate_checks() -> None:
+    project = _software("Synthetic release project")
+
+    message = _throws_message(
+        "software: releasing a project with no requirements is refused",
+        lambda: record_release(project),
+    )
+    _check(
+        "software: the empty-project refusal says nothing to test is not everything tested",
+        "not the same as everything tested" in message,
+    )
+
+    agreed = add_days(today(), 2)
+    requirement = add_requirement(project, "Discharge letter prints on one page", agreed_on=agreed)[
+        "requirement"
+    ]
+
+    blocked = _throws_message(
+        "software: releasing with an untested requirement is refused",
+        lambda: record_release(project),
+    )
+    _check(
+        "software: the refusal names the untested requirement",
+        "Discharge letter prints on one page" in blocked,
+    )
+    _check(
+        "software: the refusal says no UAT result is recorded against it",
+        "No UAT result is recorded" in blocked,
+    )
+
+    record_uat_result(project, requirement, "Passed", tested_on=agreed)
+    stale = _throws_message(
+        "software: a passing UAT dated the same day the requirement was agreed does not "
+        "count — the gate is a result newer than the agreement",
+        lambda: record_release(project),
+    )
+    _check(
+        "software: the refusal explains the passing result predates the agreement",
+        "predate" in stale,
+    )
+    _check(
+        "software: the uncovered requirement is still uncovered (derived, not stored)",
+        len(uat_coverage(project)["uncovered"]) == 1,
+    )
+
+    record_uat_result(project, requirement, "Passed", tested_on=add_days(agreed, 1))
+    _check(
+        "software: a passing UAT newer than the agreement covers the requirement "
+        "(positive control)",
+        len(uat_coverage(project)["covered"]) == 1
+        and uat_coverage(project)["uncovered"] == [],
+    )
+
+    released = record_release(project)
+    _check(
+        "software: record_release stamps the status and the date once the gate is clear",
+        released["status"] == "Released" and released["released_on"] == str(today()),
+    )
+
+
+def _software_release_terminal_checks() -> None:
+    project = _software("Synthetic terminal project")
+    requirement = add_requirement(project, "Session times out after 30 minutes")["requirement"]
+    record_uat_result(project, requirement, "Passed", tested_on=add_days(today(), 1))
+    record_release(project)
+
+    already = _throws_message(
+        "software: a second record_release is refused",
+        lambda: record_release(project),
+    )
+    _check(
+        "software: the second-release refusal names the date it was already released on",
+        "already released on" in already and str(today()) in already,
+    )
+
+    _expect_throws(
+        "software: adding a requirement to a Released project is refused",
+        lambda: add_requirement(project, "Added after the fact"),
+    )
+    _expect_throws(
+        "software: recording a UAT result on a Released project is refused",
+        lambda: record_uat_result(project, requirement, "Passed"),
+    )
+
+    def _un_release():
+        doc = frappe.get_doc("Software Project Record", project)
+        doc.status = "Active"
+        doc.save()
+
+    _expect_throws(
+        "software: un-releasing by a direct save is refused — Released is terminal",
+        _un_release,
+    )
+    _check(
+        "software: the project is still Released after the refused direct save",
+        frappe.db.get_value("Software Project Record", project, "status") == "Released",
+    )
+
+    _expect_throws(
+        "software: a project cannot be created already Released",
+        lambda: _software("Born released", status="Released"),
+    )
+
+    def _release_by_save():
+        doc = frappe.get_doc("Software Project Record", _software("Synthetic bypass project"))
+        doc.status = "Released"
+        doc.save()
+
+    _expect_throws(
+        "software: setting the status to Released by a direct save is refused — "
+        "it would skip the UAT gate entirely",
+        _release_by_save,
+    )
+
+    abandoned = _software("Synthetic abandoned project")
+    abandoned_requirement = add_requirement(abandoned, "Never delivered")["requirement"]
+    abandoned_doc = frappe.get_doc("Software Project Record", abandoned)
+    abandoned_doc.status = "Abandoned"
+    abandoned_doc.save()
+    _check(
+        "software: Abandoned can be set by a direct save (positive control — only the "
+        "release path is guarded)",
+        frappe.db.get_value("Software Project Record", abandoned, "status") == "Abandoned",
+    )
+    _expect_throws(
+        "software: recording a UAT result on an Abandoned project is refused",
+        lambda: record_uat_result(abandoned, abandoned_requirement, "Passed"),
+    )
+    _expect_throws(
+        "software: releasing an Abandoned project is refused",
+        lambda: record_release(abandoned),
+    )
+
+
+# -- report parity ----------------------------------------------------------
+
+
+def _build_publish_report_parity_checks() -> None:
+    """The report and the controllers must never disagree — both go through
+    build_publish, and this is the test that says so."""
+    sign = _sign("SYN-REPORT-1")
+    design = add_design(sign)["design"]
+    _pass_chain(sign, design)
+
+    page = _web_page("Synthetic report page")
+    record_step(page, "Draft")
+
+    project = _software("Synthetic report project")
+    requirement = add_requirement(project, "Report parity requirement")["requirement"]
+    record_uat_result(project, requirement, "Passed", tested_on=add_days(today(), 1))
+
+    columns, rows = build_publish_report_execute({})
+    _check("report: it returns columns", len(columns) == 6)
+
+    by_record = {row["record"]: row for row in rows}
+
+    _check(
+        "report: the sign row carries the derived status, matching sign_status()",
+        by_record[sign]["status"] == sign_status(sign) == "Planned",
+    )
+    # The report names the blockers of the next gate that has not cleared: a
+    # sign whose chain is cleared is waiting on Production, and repeating the
+    # already-cleared prerequisites back at the reader helps nobody.
+    readiness = sign_readiness(sign)
+    _check(
+        "report: with production unblocked, the sign row names what installation still "
+        "needs, matching sign_readiness()",
+        readiness["production_blockers"] == []
+        and by_record[sign]["blockers"] == "\n".join(readiness["installation_blockers"])
+        and "Production" in by_record[sign]["blockers"],
+    )
+
+    installed = _sign("SYN-REPORT-2")
+    installed_design = add_design(installed)["design"]
+    _pass_chain(installed, installed_design)
+    _sign_event(installed, installed_design, "Production", occurred_on=add_days(today(), 3))
+    _sign_event(installed, installed_design, "Installation", occurred_on=add_days(today(), 4))
+    _, rows_with_installed = build_publish_report_execute({})
+    installed_row = {row["record"]: row for row in rows_with_installed}[installed]
+    _check(
+        "report: a fully installed sign shows no blockers at all (positive control — "
+        "the parity assertion above is not passing on an always-empty column)",
+        installed_row["blockers"] == "" and installed_row["status"] == "Installed",
+    )
+
+    _check(
+        "report: the page row carries the derived status and its publication blockers",
+        by_record[page]["status"] == "Draft"
+        and by_record[page]["blockers"]
+        == "\n".join(get_page_state(page)["publication_blockers"]),
+    )
+    _check(
+        "report: the page's blockers are non-empty while review and approval are missing "
+        "(positive control — the parity assertion is not passing on two empty strings)",
+        by_record[page]["blockers"] != "",
+    )
+
+    _check(
+        "report: the software row counts covered requirements, matching uat_coverage()",
+        by_record[project]["detail"] == "1 of 1 requirement(s) have a passing UAT result"
+        and by_record[project]["blockers"] == "",
+    )
+
+    signage_only, signage_rows = build_publish_report_execute({"area": "Signage"})
+    _check(
+        "report: the area filter narrows the listing to signage only",
+        all(row["record"].startswith("SIGN-") for row in signage_rows)
+        and any(row["record"] == sign for row in signage_rows),
+    )
