@@ -240,6 +240,13 @@ Two conditions on the go:
    no non-stock PO-linked row. See the README's Phase 6 section for the full
    design and `hospital_ops/hospital_ops/purchase_receipt_guard.py` for the
    code, which cites the exact core source lines this gap was read from.
+   A second Codex audit round (still 24-Aug-2026) found the hook was
+   comparing the wrong quantity field (`qty`, "Accepted Quantity", instead of
+   `received_qty`, which is what core itself compares against the ordered
+   qty) and was not honouring `Stock Settings.
+   role_allowed_to_over_deliver_receive`, core's own authorised-override
+   escape hatch — both fixed and covered by `run_phase6_tests` (75/75 after
+   the fix).
 2. **Decide explicitly what to do about the forced accounting.** Either accept a
    permanently unclearable *Received But Not Billed* balance as cosmetic noise, or agree
    that Purchase Invoices will be entered to close it, or disable perpetual inventory for

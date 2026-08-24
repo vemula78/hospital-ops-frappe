@@ -100,7 +100,7 @@ sudo docker exec -u frappe -w /home/frappe/frappe-bench frappe_docker-backend-1 
 ```
 
 Phase 6 (Weekly Review, dashboard/notification fixtures, the over-receipt
-hook) has its own suite, 64 checks, same shape. It also expects the
+hook) has its own suite, 75 checks, same shape. It also expects the
 dashboard/notification fixture records to already exist — a fresh
 `bench migrate` installs them from `hospital_ops/fixtures/*.json`, but on a
 site that has never run that migration, create them once by hand first:

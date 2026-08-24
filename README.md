@@ -784,17 +784,56 @@ non-stock line never enters it.
 — **the one sanctioned touch outside this app's own doctypes** — to
 `purchase_receipt_guard.guard_non_stock_over_receipt`. For every item row
 with a `purchase_order` reference whose Item is non-stock, it locks the PO
-Item row first (`for_update=True`, this app's usual discipline), sums qty
-already received against that line across *other submitted* Purchase
-Receipts as a post-lock `FOR UPDATE` read, adds this document's own row, and
-refuses if the total exceeds the ordered qty plus whatever allowance is
-configured — mirroring core's own tolerance logic
-(`Item.over_delivery_receipt_allowance` overriding `Stock Settings`'s global
-one) rather than inventing a stricter rule that could disagree with it.
-**It never fires for stock items** (core already guards those), and it
-costs zero queries on a receipt with no non-stock PO-linked row.
+Item row first (`for_update=True`, this app's usual discipline), sums
+**received quantity** (accepted + rejected) already received against that
+line across *other submitted* Purchase Receipts as a post-lock `FOR UPDATE`
+read, adds this document's own row, and refuses if the total exceeds the
+ordered qty plus whatever allowance is configured — mirroring core's own
+tolerance logic (`Item.over_delivery_receipt_allowance` overriding
+`Stock Settings`'s global one, and its authorised-override role) rather than
+inventing a stricter rule that could disagree with it. **It never fires for
+stock items** (core already guards those), and it costs zero queries on a
+receipt with no non-stock PO-linked row.
 
-Verification: `run_phase6_tests`, **64 checks, 0 failures**, rolled back at
+**Codex audit, second round, four findings, all fixed.**
+
+- **High — the wrong quantity field.** The first cut summed
+  `Purchase Receipt Item.qty` ("Accepted Quantity"), which excludes rejected
+  units; core's own bookkeeping (`purchase_receipt.py`'s `status_updater`
+  config: `source_field: "received_qty"` on the receipt row, compared against
+  `target_ref_field: "qty"` — the ordered qty — on the PO row) compares
+  **Received Quantity** (accepted + rejected). A receipt of 4 units as 2
+  accepted + 2 rejected against 2 ordered would have read as "2 vs 2" and
+  missed a real over-receipt. Fixed to sum `received_qty`. Verified rather
+  than assumed that `received_qty` is reliably populated even on non-stock
+  rows by the time this hook runs:
+  `buying_controller.py::validate_accepted_rejected_qty` runs for every row
+  of every Purchase Receipt with no stock-item guard, inside `validate()`,
+  which always completes before `before_submit` fires — so the fallback in
+  `_received_qty()` (`received_qty or qty + rejected_qty`) is defensive, not
+  load-bearing, confirmed by an explicit test assertion rather than a guess.
+- **Medium — the authorised-override role was not honoured.** Core lets a
+  user holding `Stock Settings.role_allowed_to_over_deliver_receive` exceed
+  the allowance with a warning (`status_updater.py::
+  warn_about_bypassing_with_role`), not a refusal; the hook now mirrors this
+  exactly, `frappe.msgprint` in place of `frappe.throw`. One subtlety found
+  and tested rather than assumed: `Stock Settings.
+  validate_over_delivery_receipt_allowance` clears the role field on save
+  whenever the global percentage allowance is falsy, so the role cannot be
+  configured on its own — the test sets both fields together, matching what
+  the site itself requires to persist the setting at all.
+- **Low — `get_all` for the CSR Tranche child listing in Weekly Review.**
+  Kept, but now carries the same justifying comment the Phase 3 report's
+  identical query already carries: the rows are keyed to CSR Project names a
+  prior `get_list` call already permission-filtered, so this is the
+  documented exception, not an oversight.
+- **Low — a `how_computed` string that overstated its own accuracy.** Said
+  "document order" (the real tie-break is `expected_on` then `idx`) and
+  "submitted receipts" (the real figure nets out Receipt Reversals). Both
+  corrected to match `tranche_states()`'s actual semantics — the entire point
+  of `how_computed` is that it does not lie about how a figure was reached.
+
+Verification: `run_phase6_tests`, **75 checks, 0 failures**, rolled back at
 the end. Every Weekly Review section carries a positive control (the seeded
 item appears, tagged with the right section) and a negative control (a
 resolved/processed/published/fully-received counterpart does not), plus a
@@ -807,7 +846,13 @@ over-receipt refused naming the item and both figures, exactly-at-the-limit
 accepted, a configured 10% allowance accepted inside and refused outside,
 a stock-item over-receipt still refused **by core** (asserted by the
 absence of this app's own marker string in the message, not merely "an
-exception was raised"), and a receipt with no PO reference untouched.
+exception was raised"), a receipt with no PO reference untouched, a
+rejected-units receipt refused on `received_qty` even though the accepted-only
+figure alone would have passed, and the authorised-override role accepted
+with a warning for a user holding it and still refused for one who does not
+(a freshly created limited user — Administrator cannot serve as the negative
+control here, because `permissions.py::get_roles` special-cases Administrator
+to mean literally every Role record on the site).
 `run_phase2_tests` (32/32), `run_phase3_tests` (111/111), `run_phase4_tests`
 (42/42) and `run_phase5_tests` (142/142) all re-ran clean afterwards — no
 regression, no residual data (see `docs/operations.md`).
