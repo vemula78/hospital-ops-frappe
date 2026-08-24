@@ -3028,6 +3028,8 @@ def run_phase6_tests() -> None:
         _weekly_review_web_page_checks()
         _weekly_review_software_checks()
         _over_receipt_guard_checks()
+        _over_receipt_received_qty_checks()
+        _over_receipt_role_bypass_checks()
         _dashboard_fixture_checks()
         _notification_fixture_checks()
     finally:
@@ -3512,6 +3514,198 @@ def _over_receipt_guard_checks() -> None:
         "untouched (positive control — zero-cost path)",
         no_po.docstatus == 1,
     )
+
+
+def _over_receipt_received_qty_checks() -> None:
+    """Codex audit, High: the guard must sum ``received_qty`` (accepted +
+    rejected), not ``qty`` (accepted only) — see the module docstring in
+    ``purchase_receipt_guard.py`` for the file:line evidence from this
+    container's own erpnext checkout. A receipt with rejected units that
+    summed only ``qty`` would undercount and miss a real over-receipt.
+    """
+    company = "SSSIHMS Whitefield Ops"
+    if not frappe.db.exists("Company", company):
+        _check(
+            "over-receipt guard (received_qty): SSSIHMS Whitefield Ops company exists "
+            "— required for this group",
+            False,
+        )
+        return
+
+    warehouse = frappe.db.get_value("Warehouse", {"company": company}, "name")
+
+    # 1. 2 accepted + 2 rejected (received_qty = 4) against 2 ordered: refused,
+    # even though qty (accepted only) alone would read as "2 vs 2".
+    item = _p6_item(is_stock_item=0)
+    po = _p6_po(item, 2, company)
+    row = po.items[0]
+    over = frappe.get_doc(
+        {
+            "doctype": "Purchase Receipt",
+            "company": company,
+            "supplier": po.supplier,
+            "posting_date": today(),
+            "items": [
+                {
+                    "item_code": item,
+                    "qty": 2,
+                    "rejected_qty": 2,
+                    "rejected_warehouse": warehouse,
+                    "rate": 100,
+                    "purchase_order": po.name,
+                    "purchase_order_item": row.name,
+                }
+            ],
+        }
+    )
+    over.insert()
+    _check(
+        "over-receipt guard (received_qty): core itself sets received_qty to "
+        "qty + rejected_qty (4.0) rather than leaving it at qty alone (2.0)",
+        flt(over.items[0].received_qty) == 4.0 and flt(over.items[0].qty) == 2.0,
+    )
+    message = _throws_message(
+        "over-receipt guard (received_qty): 2 accepted + 2 rejected against 2 ordered "
+        "is refused (received_qty=4 exceeds ordered=2, even though accepted qty alone "
+        "would read as 2 vs 2)",
+        over.submit,
+    )
+    _check(
+        "over-receipt guard (received_qty): the refusal names the received figure 4.0, "
+        "not the accepted-only figure",
+        "4.0" in message,
+    )
+    _check(
+        "over-receipt guard (received_qty): the refusal carries this app's marker",
+        _OVER_RECEIPT_MARKER in message,
+    )
+
+    # 2. Parity check, verified rather than assumed: on an accepted-only row (no
+    # rejection), received_qty and qty land identically once core's own validate()
+    # has run — the fallback in _received_qty() is provably redundant here, not a
+    # guess.
+    item2 = _p6_item(is_stock_item=0)
+    po2 = _p6_po(item2, 5, company)
+    accepted_only = _p6_receipt(item2, 3, po2, po2.items[0].name, company)
+    accepted_only.insert()
+    _check(
+        "over-receipt guard (received_qty): on an accepted-only row, received_qty "
+        "equals qty exactly after core's validate() (the documented fallback is "
+        "defensive, not load-bearing, in every scenario this app can observe)",
+        flt(accepted_only.items[0].received_qty) == flt(accepted_only.items[0].qty) == 3.0,
+    )
+    accepted_only.submit()
+    _check(
+        "over-receipt guard (received_qty): that accepted-only receipt is accepted "
+        "(positive control)",
+        accepted_only.docstatus == 1,
+    )
+
+
+def _over_receipt_role_bypass_checks() -> None:
+    """Codex audit, Medium: mirror core's authorised-override role
+    (``Stock Settings.role_allowed_to_over_deliver_receive`` —
+    ``status_updater.py::check_overflow_with_allowance`` /
+    ``warn_about_bypassing_with_role``). A user holding the configured role
+    gets a warning, not a refusal; a user who does not is still refused.
+
+    Verified rather than assumed, twice over:
+
+    - ``Stock Settings.validate_over_delivery_receipt_allowance`` clears the
+      role field on save whenever ``over_delivery_receipt_allowance`` (the
+      global percentage) is falsy — so the role cannot be configured in
+      isolation; both fields are set together here, matching what core
+      itself requires to persist the setting at all.
+    - ``frappe.get_roles()`` for a *non*-Administrator user reflects real
+      ``Has Role`` assignments, so the negative control uses a freshly
+      created user granted enough to drive the flow (``Purchase User``,
+      ``Item Manager``, ``Purchase Master Manager``) but deliberately not
+      ``Purchase Manager`` — the role configured below. Administrator is not
+      usable for the negative control: ``permissions.py::get_roles`` special-
+      cases Administrator to mean literally every Role record on the site.
+    """
+    company = "SSSIHMS Whitefield Ops"
+    if not frappe.db.exists("Company", company):
+        _check(
+            "over-receipt guard (role bypass): SSSIHMS Whitefield Ops company exists "
+            "— required for this group",
+            False,
+        )
+        return
+
+    role_name = "Purchase Manager"
+    stock_settings = frappe.get_single("Stock Settings")
+    original_allowance = stock_settings.over_delivery_receipt_allowance
+    original_role = stock_settings.role_allowed_to_over_deliver_receive
+
+    stock_settings.over_delivery_receipt_allowance = 1
+    stock_settings.role_allowed_to_over_deliver_receive = role_name
+    stock_settings.save()
+    stock_settings.reload()
+    _check(
+        "over-receipt guard (role bypass): Stock Settings actually persisted the "
+        "role once a nonzero global allowance was set alongside it",
+        stock_settings.role_allowed_to_over_deliver_receive == role_name,
+    )
+
+    try:
+        # Positive: Administrator holds every role, including this one.
+        item = _p6_item(is_stock_item=0)
+        po = _p6_po(item, 2, company)
+        over = _p6_receipt(item, 5, po, po.items[0].name, company)
+        over.insert()
+        over.submit()
+        _check(
+            "over-receipt guard (role bypass): with the bypass role held, an "
+            "over-receipt (5 vs 2 ordered) is accepted with a warning, not refused",
+            over.docstatus == 1,
+        )
+
+        # Negative: a user who does not hold Purchase Manager is still refused.
+        limited_email = f"phase6.overreceive.{frappe.generate_hash(length=8)}@example.test"
+        limited_user = frappe.get_doc(
+            {
+                "doctype": "User",
+                "email": limited_email,
+                "first_name": "Phase 6 Limited Over-Receive Test User",
+                "send_welcome_email": 0,
+                "roles": [
+                    {"role": "Purchase User"},
+                    {"role": "Item Manager"},
+                    {"role": "Purchase Master Manager"},
+                ],
+            }
+        ).insert(ignore_permissions=True)
+        _check(
+            "over-receipt guard (role bypass): the limited test user does not hold "
+            "Purchase Manager (verified, not assumed)",
+            role_name not in frappe.get_roles(limited_user.name),
+        )
+
+        item2 = _p6_item(is_stock_item=0)
+        po2 = _p6_po(item2, 2, company)
+        over2 = _p6_receipt(item2, 5, po2, po2.items[0].name, company)
+        over2.insert()
+
+        frappe.set_user(limited_user.name)
+        try:
+            message = _throws_message(
+                "over-receipt guard (role bypass): the same over-receipt is refused "
+                "for a user who does not hold the configured role",
+                over2.submit,
+            )
+            _check(
+                "over-receipt guard (role bypass): that refusal still carries this "
+                "app's marker",
+                _OVER_RECEIPT_MARKER in message,
+            )
+        finally:
+            frappe.set_user("Administrator")
+    finally:
+        stock_settings.reload()
+        stock_settings.over_delivery_receipt_allowance = original_allowance
+        stock_settings.role_allowed_to_over_deliver_receive = original_role
+        stock_settings.save()
 
 
 # -- Dashboard and Notification fixtures -------------------------------------
