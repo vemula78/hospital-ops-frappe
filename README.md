@@ -183,6 +183,186 @@ All 32 passed. The real `test_*.py` suites remain the primary tests and
 should be re-run with `bench run-tests` once the shared site's Fiscal Year
 conflict is resolved by whoever owns that configuration.
 
+### Phase 3 — CSR
+
+The largest custom build of the conversion: a port of the Next.js
+application's `src/server/domain/csr.ts` (2,708 lines) and its
+`csr_project_financials` view. Six doctypes, module `Hospital Ops`, all
+`track_changes: 1`, `System Manager` only.
+
+Every name is prefixed `CSR ` deliberately. `trust_compliance` is installed
+on the same site and already owns `Fund`, `Fund Transfer`, `Trust Donation`
+and `Grant Utilisation`; each name below was checked free before creation.
+
+| Doctype | Naming | Kind | What it is |
+| --- | --- | --- | --- |
+| `CSR Funder` | `CSRF-#####` | normal | The organisation offering or giving money |
+| `CSR Opportunity` | `CSRO-#####` | normal | The pipeline, before money exists |
+| `CSR Project` | `CSRP-#####` | normal | The funded project, with a `tranches` child table |
+| `CSR Tranche` | — | child | One expected instalment: date and amount only |
+| `CSR Fund Event` | `CSRE-#####` | **submittable** | The money ledger |
+| `CSR Reporting Obligation` | `CSRR-#####` | normal | What we owe the funder, and who checked it was delivered |
+
+`CSR Funder` is deliberately **not** an ERPNext Customer: Customer drags
+receivables accounting and an AR-ageing story that has nothing to do with a
+sanction letter. This follows `trust_compliance`'s Trust Donor precedent.
+
+§4.3 holds throughout: a funder and a project are organisations and
+programmes. No individual beneficiary appears in any doctype, any field or
+any test fixture.
+
+#### The ledger, and why it cannot be cancelled
+
+`CSR Fund Event` is submittable, and submission is what makes an entry count.
+Frappe's submitted document supplies what the reference build's Postgres
+`BEFORE UPDATE OR DELETE` triggers supplied: once submitted, the row cannot be
+edited. What Frappe does not supply is a refusal to *cancel*, so the
+controller adds one — **`before_cancel` and `on_cancel` both throw**.
+
+A correction is a **reversal entry**, never a cancellation and never an edit.
+Cancelling would silently remove the original from every figure and leave no
+record that it had ever been recorded; the trail has to show the mistake and
+the fix, not the corrected state alone. The refusal message names the
+reversal kind to use and the event to point it at.
+
+- **Only submitted events count.** Every sum filters `docstatus = 1`. A draft
+  counts for nothing, including a draft sitting on a project that already has
+  submitted events.
+- **Direction lives in the `kind`, never in the sign.** `amount` must be
+  greater than zero on all four kinds (`Receipt`, `Expenditure`,
+  `Receipt Reversal`, `Expenditure Reversal`).
+- **A reversal cannot exceed what remains of what it reverses.** `reverses`
+  must name a *submitted* event of the matching kind on the *same* project,
+  and the amount is checked against the original less the submitted reversals
+  already pointing at it. Without this, a reversal larger than its original
+  produces a negative figure that no cross-stage comparison catches — every
+  comparison asks whether one figure *exceeds* another, and a negative one
+  never does.
+
+#### The overridable-warning pattern
+
+Cross-stage comparisons are **warnings, not constraints**. Spending ahead of
+a tranche and receiving above a sanction both genuinely happen; a database
+constraint here would eventually force someone to enter a false figure. So:
+
+1. Submitting refuses once, naming the exact figures — e.g.
+   `Spent ₹2,50,000.00 against ₹2,00,000.00 received — the difference is
+   being carried by the institution.` Nothing is written; the event stays a
+   draft and the figures do not move.
+2. To record it anyway the entry must carry **all three** of
+   `override_confirmed`, a non-empty `override_reason`, and
+   `override_acknowledges` set to the **exact warning string** the refusal
+   issued (multiple warnings joined by ` | `).
+3. Change the amount and the string changes, so a **stale acknowledgement is
+   refused** — the confirmation is bound to the entry that produced it.
+
+All three are enforced in the controller, not only in the form: a direct API
+call must not be able to record an override with no reason. An override on an
+entry that produces no warning is also refused — an override answering
+nothing must not be recorded as though a warning had been weighed.
+
+The warnings describe the **resulting state**, not the delta, so a project
+already above its sanction keeps warning on every later entry. That is
+deliberate and asserted in the suite, so it does not get "fixed" into a delta
+check.
+
+`preview_warnings(csr_project, kind, amount)` (whitelisted, read-only, no
+lock) hands the desk the same acknowledgement text before a refusal has been
+provoked.
+
+Two states are **not** overridable, because they are decisions already taken
+rather than figures that disagree: an `Expenditure` on a **Closed** project,
+and *any* event on a **Cancelled** one. A Closed project still accepts a
+correcting reversal.
+
+#### Lock order
+
+`before_submit` takes
+`frappe.db.get_value("CSR Project", …, for_update=True)` **first** — that row
+is the lock every submitter on the project contends for — and only then sums
+the ledger. The sums are themselves `FOR UPDATE` reads, because under
+MariaDB/InnoDB REPEATABLE READ a *non-locking* read after the lock is served
+from the snapshot taken before the lock was granted, i.e. it would miss the
+very concurrent expenditure the lock had just waited for. This is exactly the
+hole the Phase 2 P2-2 re-audit found, applied here pre-emptively.
+`convert_to_project` and `mark_verified` take the same shape on their own
+rows, and each decides on what the *locked read* returned rather than on the
+document loaded earlier.
+
+Same limitation as Phase 2: genuine concurrency is not drivable from a
+single-request-per-process bench, so the guarantee is asserted by
+source-level checks on the call order (`_csr_lock_order_checks`).
+
+#### Nothing is stored that can be computed
+
+There is no `received`, `spent` or `balance` column anywhere, and the suite
+asserts it against the real table columns (`DESCRIBE`), the way the reference
+build asserted it against `information_schema`. A stored total is a dual
+write, and a dual write eventually disagrees with its rows.
+
+`hospital_ops/hospital_ops/csr_financials.py::totals_from_kind_rows` is the
+**only** code that turns ledger rows into figures. Two callers share it:
+
+- `CSR Project.get_project_financials(csr_project)` — whitelisted. Sanctioned,
+  received, spent, balance, per-tranche expected-vs-received with derived
+  overdue flags, and the obligations with derived overdue flags.
+- the **CSR Project Financials** Script Report (module `Hospital Ops`, filters
+  on funder and status) — the portfolio view, one grouped pass over the whole
+  ledger.
+
+One function, two callers, so the document view and the desk view are
+incapable of showing different numbers. The reference build's lesson was a
+closure threshold computed outside a transaction and recomputed inside it,
+which let a record be written whose stored state disagreed with the check
+that permitted it.
+
+**Derived state, not status columns.** Tranche overdueness is computed at
+read time (receipts applied in `expected_on` order against the cumulative
+expectation; overdue = past its date and short). Obligation overdueness is
+computed (`due_on` in the past, nothing submitted). A stored flag is wrong
+the moment a backdated receipt or submission is entered, and then nobody
+knows which of the two to believe.
+
+**Money.** Frappe `Currency` (decimal) per the plan's Bucket 3 decision — the
+reference build's bigint-paise representation is deliberately *not* ported.
+Float traps are guarded by rounding every comparison and every returned
+figure through `flt(x, 2)`. The rupee formatter in `csr_financials.format_inr`
+is hand-written rather than `frappe.utils.fmt_money` on purpose: its output is
+compared character-for-character against a stored acknowledgement, so it must
+not depend on a site-level number-format setting that could change between
+the refusal and the confirmation.
+
+#### Evidence is verified by a person
+
+`CSR Reporting Obligation.verified_by` / `verified_on` cannot be set on
+insert and cannot be set by a direct save — `read_only` in the JSON is a UI
+hint, and `validate()` is the actual guard (the Phase 2 P3-2 lesson).
+`mark_verified(name, verified_by=None, verified_on=None)` is the only path:
+it refuses when nothing has been submitted yet, refuses an unknown verifier,
+and refuses a second verification on the strength of its locking read. A
+verification date with nobody attached to it is refused outright — that is
+precisely the "inferred from an upload" failure the rule exists to prevent.
+
+#### Opportunities convert once
+
+`convert_to_project(name, sanction_reference=None)` is whitelisted. It locks
+its own row, refuses if `converted_to` is already set (naming the project),
+refuses a stage other than `Sanctioned`, refuses a missing sanction figure,
+creates the `CSR Project`, and stamps `converted_to`. `Declined` requires a
+`decline_reason`.
+
+#### Tests
+
+```bash
+bench --site frontend execute hospital_ops.hospital_ops.tests_runner.run_phase3_tests
+```
+
+**85 passed, 0 failed** on the live site, every negative carrying its
+positive control in the same block, everything rolled back at the end
+whatever happens. `run_phase2_tests` still reports 32 passed / 0 failed, and
+`bench run-tests --app hospital_ops --doctype "Quick Capture"` still passes 5
+of 5.
+
 ### Contributing
 
 This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:

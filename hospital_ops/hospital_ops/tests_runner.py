@@ -684,9 +684,26 @@ def _csr_override_pattern_checks() -> None:
         get_project_financials(sanction_project)["received"] == 150_000.00,
     )
 
+    # A project that is already over its sanction keeps warning on every later
+    # entry, because the warning describes the *resulting* figures rather than
+    # the delta. That is deliberate — the state is what needs acknowledging —
+    # and it is asserted here so nobody "fixes" it into a delta check.
+    later = _event(sanction_project, "Expenditure", 1_000)
+    still_warned = _throws_message(
+        "override: a later entry on an already-over-sanction project warns again "
+        "(the warning describes the resulting state, not the delta)",
+        later.submit,
+    )
+    _check(
+        "override: and that warning still names the standing over-sanction figure",
+        "₹1,50,000.00" in still_warned,
+    )
+
     # An override answering nothing must not be recordable as though a warning
-    # had been weighed.
-    quiet = _event(sanction_project, "Expenditure", 1_000)
+    # had been weighed. On a clean project there is nothing to answer.
+    quiet_project = _project("No-warning checks", 100_000)
+    _submitted(quiet_project, "Receipt", 50_000)
+    quiet = _event(quiet_project, "Expenditure", 1_000)
     quiet.override_confirmed = 1
     quiet.override_reason = "No warning here."
     quiet.override_acknowledges = "invented"
@@ -698,7 +715,7 @@ def _csr_override_pattern_checks() -> None:
     quiet.submit()
     _check(
         "override: the same entry submits cleanly with no override (positive control)",
-        get_project_financials(sanction_project)["spent"] == 1_000.00,
+        get_project_financials(quiet_project)["spent"] == 1_000.00,
     )
 
 

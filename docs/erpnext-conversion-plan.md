@@ -142,7 +142,7 @@ big-bang this.
 | **0** | Scaffold the app (`bench new-app hospital_ops`), decide the module list and naming prefix, confirm it installs on the existing site | One day. Confirms the ground before committing                                                                                    |
 | **1** | **Configure only, no code**: Suppliers/Contacts, Projects + Tasks, Assets, the Buying flow                                          | Replaces the largest and most complex domain (procurement) with configuration. If this phase disappoints, stop — the case is gone |
 | **2** | Small custom doctypes: Waiting For, Capture/Inbox, Meetings                                                                         | Fast, restores the daily-driver workflow                                                                                          |
-| **3** | **CSR**, using submittable doctypes for the ledger and `trust_compliance` as the template                                           | The largest custom build; do it once the framework is familiar                                                                    |
+| **3** | **CSR**, using submittable doctypes for the ledger and `trust_compliance` as the template — **done, 24-Aug-2026** (see below)                                         | The largest custom build; do it once the framework is familiar                                                                    |
 | **4** | Research + ethics workflow                                                                                                          | Self-contained                                                                                                                    |
 | **5** | Build & Publish: Signage, Website, Software                                                                                         | Self-contained; workflow-engine heavy                                                                                             |
 | **6** | Reports, dashboards, weekly review, notification config                                                                             | Cheap once the data model exists                                                                                                  |
@@ -194,3 +194,41 @@ tells you to stop.
 *24-Aug-2026: this plan moved here from the productivity-app repo. The ERPNext
 conversion is a separate project in this repository; the Next.js application
 repo stays untouched and is used read-only as the behavioural reference.*
+
+## Phase 3 — done, 24-Aug-2026
+
+Built and live on `erp.sssihms.org`. Six doctypes, all prefixed `CSR ` and
+each name verified free on the site before creation (`trust_compliance` owns
+`Fund`, `Trust Donation` and `Grant Utilisation` on the same bench):
+**CSR Funder**, **CSR Opportunity**, **CSR Project**, **CSR Tranche** (child),
+**CSR Fund Event** (submittable), **CSR Reporting Obligation**, plus the
+**CSR Project Financials** Script Report. The README has the full behaviour
+notes; the short version of what was carried over from `csr.ts` and what was
+not:
+
+**Carried over.** The append-only ledger (Frappe submission in place of the
+Postgres `BEFORE UPDATE OR DELETE` triggers, with cancellation refused so a
+correction is a reversal entry); direction in the `kind` rather than the sign;
+reversal ceilings; the overridable-warning pattern with its exact-string
+acknowledgement; computed-not-stored financials with one summing function
+shared by the document method and the report; derived tranche and obligation
+overdueness; evidence verified by a named person; the
+lock-before-read-before-write ordering, with the sums taken as locking reads.
+
+**Deliberately not carried over.** Bigint-paise money (Frappe `Currency` per
+the Bucket 3 decision, with `flt(x, 2)` rounding at every comparison); the
+audit hash chain (Frappe `Version` via `track_changes`); the workspace/tenancy
+dimension (single-tenant here); and the reference module's
+evidence-completeness snapshots, outcome metrics, proposals, communications
+log and draft-report generator — none of which the Phase 3 brief scoped, and
+all of which are additive later if the desk asks for them.
+
+**Still outstanding, honestly.** Concurrency is asserted by source-level
+lock-order checks rather than by driving two overlapping transactions, because
+a `bench execute` is one request per process. That is the same limitation
+Phase 2 recorded, not a new one.
+
+**Verification.** `run_phase3_tests` 85 passed / 0 failed;
+`run_phase2_tests` 32 passed / 0 failed (no regression);
+`bench run-tests --app hospital_ops --doctype "Quick Capture"` 5 of 5.
+All CSR record counts back to zero after the runs.
