@@ -1,0 +1,150 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:CSRE-{#####}",
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "csr_project",
+  "kind",
+  "occurred_on",
+  "column_break_head",
+  "amount",
+  "reference",
+  "reverses",
+  "section_narration",
+  "narration",
+  "section_override",
+  "override_confirmed",
+  "override_reason",
+  "override_acknowledges",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "csr_project",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "CSR Project",
+   "options": "CSR Project",
+   "reqd": 1
+  },
+  {
+   "description": "Direction lives here, never in the sign of the amount. A correction is a Reversal entry pointing at the original event — never a cancellation and never an edit, so the trail stays complete.",
+   "fieldname": "kind",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Kind",
+   "options": "Receipt\nExpenditure\nReceipt Reversal\nExpenditure Reversal",
+   "reqd": 1
+  },
+  {
+   "default": "Today",
+   "fieldname": "occurred_on",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Occurred On",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Must be greater than zero. Only submitted events count towards any figure; a draft counts for nothing.",
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Amount",
+   "reqd": 1
+  },
+  {
+   "fieldname": "reference",
+   "fieldtype": "Data",
+   "label": "Reference"
+  },
+  {
+   "depends_on": "eval:[\"Receipt Reversal\", \"Expenditure Reversal\"].includes(doc.kind)",
+   "description": "Required for a Reversal: the submitted event of the matching kind, on the same project, that this entry reverses. A reversal cannot exceed what remains unreversed of it.",
+   "fieldname": "reverses",
+   "fieldtype": "Link",
+   "label": "Reverses",
+   "options": "CSR Fund Event"
+  },
+  {
+   "fieldname": "section_narration",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "narration",
+   "fieldtype": "Small Text",
+   "label": "Narration"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_override",
+   "fieldtype": "Section Break",
+   "label": "Override"
+  },
+  {
+   "default": "0",
+   "description": "A cross-stage comparison (spent over received, received over sanctioned) is an overridable warning, not a constraint — it genuinely happens. Submitting is refused once with the figures named; confirming requires all three fields below.",
+   "fieldname": "override_confirmed",
+   "fieldtype": "Check",
+   "label": "Override Confirmed"
+  },
+  {
+   "fieldname": "override_reason",
+   "fieldtype": "Small Text",
+   "label": "Override Reason"
+  },
+  {
+   "description": "Must equal, character for character, the warning string the refusal issued. Change the amount and the string changes, so a stale confirmation is refused.",
+   "fieldname": "override_acknowledges",
+   "fieldtype": "Small Text",
+   "label": "Override Acknowledges"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "CSR Fund Event",
+   "print_hide": 1,
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Hospital Ops",
+ "name": "CSR Fund Event",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "occurred_on",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

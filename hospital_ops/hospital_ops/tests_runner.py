@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 """Manual fallback verification for Phase 2 (Quick Capture / Waiting For /
-Meeting Record), for use when ``bench run-tests`` cannot run the real
-``test_*.py`` suites on this shared evaluation site.
+Meeting Record) and Phase 3 (the CSR module), for use when ``bench
+run-tests`` cannot run the real ``test_*.py`` suites on this shared
+evaluation site.
 
 Why this exists: ``frappe.tests.IntegrationTestCase.setUpClass`` infers the
 doctype under test from the test module's name (``test_waiting_for`` ->
@@ -30,8 +31,22 @@ import inspect
 
 import frappe
 from frappe.client import set_value as client_set_value
-from frappe.utils import add_days, today
+from frappe.utils import add_days, flt, strip_html, today
 
+from hospital_ops.hospital_ops.doctype.csr_fund_event.csr_fund_event import (
+    CSRFundEvent,
+    preview_warnings,
+)
+from hospital_ops.hospital_ops.doctype.csr_opportunity.csr_opportunity import (
+    convert_to_project,
+)
+from hospital_ops.hospital_ops.doctype.csr_project.csr_project import (
+    get_project_financials,
+)
+from hospital_ops.hospital_ops.doctype.csr_reporting_obligation.csr_reporting_obligation import (
+    get_obligation_state,
+    mark_verified,
+)
 from hospital_ops.hospital_ops.doctype.meeting_record.meeting_record import (
     create_todo_from_decision,
 )
@@ -41,6 +56,9 @@ from hospital_ops.hospital_ops.doctype.quick_capture.quick_capture import (
 )
 from hospital_ops.hospital_ops.doctype.waiting_for.waiting_for import log_follow_up
 from hospital_ops.hospital_ops.permissions import get_doc_for_action
+from hospital_ops.hospital_ops.report.csr_project_financials.csr_project_financials import (
+    execute as report_execute,
+)
 
 _PASS = []
 _FAIL = []
@@ -58,6 +76,23 @@ def _expect_throws(label: str, fn) -> None:
         _check(label, True)
     else:
         _check(label, False)
+
+
+def _throws_message(label: str, fn) -> str:
+    """Like ``_expect_throws``, but hands back the refusal text.
+
+    Several Phase 3 invariants are not "it was refused" but "it was refused
+    *and said which figures*" — a refusal with no numbers in it cannot be
+    acted on, and the acknowledgement the user has to repeat back is that
+    exact text.
+    """
+    try:
+        fn()
+    except frappe.ValidationError as exc:
+        _check(label, True)
+        return strip_html(str(exc))
+    _check(label, False)
+    return ""
 
 
 def run_phase2_tests() -> None:
@@ -432,4 +467,724 @@ def _p22_lock_call_pattern_check() -> None:
     _check(
         "p2-2: the refusal names the exact ToDo the locked read found",
         second_error_message is not None and first["todo"] in second_error_message,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — CSR
+# ---------------------------------------------------------------------------
+#
+# Same shape as Phase 2: plain assertions, every negative carrying a positive
+# control in the same block, everything rolled back at the end whatever
+# happens. Synthetic data only — the funders and projects below are invented,
+# and §4.3 holds throughout: nothing here is beneficiary-level.
+
+
+def run_phase3_tests() -> None:
+    _PASS.clear()
+    _FAIL.clear()
+    try:
+        _csr_amount_and_draft_checks()
+        _csr_override_pattern_checks()
+        _csr_reversal_checks()
+        _csr_no_cancel_checks()
+        _csr_project_state_checks()
+        _csr_opportunity_checks()
+        _csr_obligation_checks()
+        _csr_report_parity_checks()
+        _csr_no_stored_total_checks()
+        _csr_lock_order_checks()
+    finally:
+        frappe.db.rollback()
+
+    print(f"\n{len(_PASS)} passed, {len(_FAIL)} failed")
+    if _FAIL:
+        frappe.throw(f"Failures: {_FAIL}")
+
+
+def _funder(name: str) -> str:
+    return frappe.get_doc({"doctype": "CSR Funder", "funder_name": name}).insert().name
+
+
+def _project(title: str, sanctioned: float, tranches=None, funder=None) -> str:
+    return (
+        frappe.get_doc(
+            {
+                "doctype": "CSR Project",
+                "project_title": title,
+                "funder": funder or _funder(f"Synthetic Funder for {title}"),
+                "sanctioned_amount": sanctioned,
+                "sanctioned_on": add_days(today(), -30),
+                "tranches": tranches or [],
+            }
+        )
+        .insert()
+        .name
+    )
+
+
+def _event(project: str, kind: str, amount: float, **extra):
+    doc = frappe.get_doc(
+        {
+            "doctype": "CSR Fund Event",
+            "csr_project": project,
+            "kind": kind,
+            "amount": amount,
+            "occurred_on": today(),
+            **extra,
+        }
+    )
+    doc.insert()
+    return doc
+
+
+def _submitted(project: str, kind: str, amount: float, **extra):
+    doc = _event(project, kind, amount, **extra)
+    doc.submit()
+    return doc
+
+
+def _csr_amount_and_draft_checks() -> None:
+    """Amount must be positive, and a draft counts for nothing."""
+    project = _project("Amount and draft checks", 1_000_000)
+
+    _expect_throws(
+        "fund_event: an amount of zero is refused",
+        lambda: _event(project, "Receipt", 0),
+    )
+    _expect_throws(
+        "fund_event: a negative amount is refused (direction lives in the kind)",
+        lambda: _event(project, "Receipt", -5_000),
+    )
+
+    accepted = _event(project, "Receipt", 100_000)
+    _check(
+        "fund_event: a positive amount is accepted (positive control)",
+        accepted.docstatus == 0 and flt(accepted.amount, 2) == 100_000.00,
+    )
+
+    drafted = get_project_financials(project)
+    _check(
+        "financials: a draft receipt counts for nothing",
+        drafted["received"] == 0.0 and drafted["spent"] == 0.0 and drafted["balance"] == 0.0,
+    )
+
+    accepted.submit()
+    submitted = get_project_financials(project)
+    _check(
+        "financials: the same receipt counts once submitted (positive control)",
+        submitted["received"] == 100_000.00 and submitted["balance"] == 100_000.00,
+    )
+
+    # A second draft on a project that already has submitted events: the draft
+    # must still be invisible, which is the case a "count everything" bug
+    # would pass the first assertion on and fail here.
+    _event(project, "Receipt", 777)
+    _check(
+        "financials: a draft alongside submitted events is still excluded",
+        get_project_financials(project)["received"] == 100_000.00,
+    )
+
+
+def _csr_override_pattern_checks() -> None:
+    """Refuse once with the figures; accept the exact acknowledgement; refuse
+    a stale one after the amount changes."""
+    project = _project("Override pattern checks", 1_000_000)
+    _submitted(project, "Receipt", 200_000)
+
+    overspend = _event(project, "Expenditure", 250_000)
+    message = _throws_message(
+        "override: an expenditure above what was received is refused",
+        overspend.submit,
+    )
+    _check(
+        "override: the refusal names both figures",
+        "₹2,50,000.00" in message and "₹2,00,000.00" in message,
+    )
+    _check(
+        "override: nothing was written — the event is still a draft",
+        frappe.db.get_value("CSR Fund Event", overspend.name, "docstatus") == 0,
+    )
+    _check(
+        "override: and the figures did not move",
+        get_project_financials(project)["spent"] == 0.0,
+    )
+
+    acknowledgement = preview_warnings(project, "Expenditure", 250_000)["acknowledgement"]
+    _check(
+        "override: preview_warnings offers the same acknowledgement text",
+        acknowledgement and acknowledgement in message,
+    )
+
+    overspend.reload()
+    overspend.override_confirmed = 1
+    overspend.override_acknowledges = acknowledgement
+    _expect_throws(
+        "override: a confirmation with no reason is refused (enforced in the domain)",
+        overspend.submit,
+    )
+
+    overspend.reload()
+    overspend.override_confirmed = 1
+    overspend.override_reason = "Equipment supplier invoice fell due before tranche 2 landed."
+    overspend.override_acknowledges = acknowledgement
+    overspend.submit()
+    _check(
+        "override: the exact three override fields are accepted (positive control)",
+        frappe.db.get_value("CSR Fund Event", overspend.name, "docstatus") == 1
+        and get_project_financials(project)["spent"] == 250_000.00,
+    )
+
+    # The amount changes; the acknowledgement does not. The figures in the
+    # stale string no longer describe what would happen, so it is refused.
+    stale = _event(project, "Expenditure", 260_000)
+    stale.override_confirmed = 1
+    stale.override_reason = "Replaying the earlier acknowledgement."
+    stale.override_acknowledges = acknowledgement
+    stale_message = _throws_message(
+        "override: replaying a stale acknowledgement after the amount changed is refused",
+        stale.submit,
+    )
+    _check(
+        "override: the refusal restates the warning as it now reads",
+        "₹5,10,000.00" in stale_message,
+    )
+
+    fresh = preview_warnings(project, "Expenditure", 260_000)["acknowledgement"]
+    stale.reload()
+    stale.override_confirmed = 1
+    stale.override_reason = "Second supplier invoice, same reason."
+    stale.override_acknowledges = fresh
+    stale.submit()
+    _check(
+        "override: the refreshed acknowledgement is accepted (positive control)",
+        get_project_financials(project)["spent"] == 510_000.00,
+    )
+
+    # Receipts above the sanction warn too, and are overridable in the same way.
+    sanction_project = _project("Receipt above sanction", 100_000)
+    over_receipt = _event(sanction_project, "Receipt", 150_000)
+    receipt_message = _throws_message(
+        "override: a receipt above the sanction is refused until acknowledged",
+        over_receipt.submit,
+    )
+    _check(
+        "override: that refusal names the sanction and the receipt",
+        "₹1,50,000.00" in receipt_message and "₹1,00,000.00" in receipt_message,
+    )
+    over_receipt.reload()
+    over_receipt.override_confirmed = 1
+    over_receipt.override_reason = "Funder released the full grant in one instalment."
+    over_receipt.override_acknowledges = preview_warnings(
+        sanction_project, "Receipt", 150_000
+    )["acknowledgement"]
+    over_receipt.submit()
+    _check(
+        "override: acknowledged, the over-sanction receipt is recorded (positive control)",
+        get_project_financials(sanction_project)["received"] == 150_000.00,
+    )
+
+    # An override answering nothing must not be recordable as though a warning
+    # had been weighed.
+    quiet = _event(sanction_project, "Expenditure", 1_000)
+    quiet.override_confirmed = 1
+    quiet.override_reason = "No warning here."
+    quiet.override_acknowledges = "invented"
+    _expect_throws(
+        "override: an override on an entry that produces no warning is refused",
+        quiet.submit,
+    )
+    quiet.reload()
+    quiet.submit()
+    _check(
+        "override: the same entry submits cleanly with no override (positive control)",
+        get_project_financials(sanction_project)["spent"] == 1_000.00,
+    )
+
+
+def _csr_reversal_checks() -> None:
+    project = _project("Reversal checks", 500_000)
+    receipt = _submitted(project, "Receipt", 100_000)
+
+    _expect_throws(
+        "reversal: a reversal naming nothing is refused",
+        lambda: _event(project, "Receipt Reversal", 10_000),
+    )
+    _expect_throws(
+        "reversal: a non-reversal naming an event is refused",
+        lambda: _event(project, "Receipt", 10_000, reverses=receipt.name),
+    )
+    _expect_throws(
+        "reversal: an Expenditure Reversal cannot reverse a Receipt (kind mismatch)",
+        lambda: _event(project, "Expenditure Reversal", 10_000, reverses=receipt.name),
+    )
+
+    other_project = _project("Reversal checks — other project", 500_000)
+    _expect_throws(
+        "reversal: a reversal cannot point at an event on another project",
+        lambda: _event(other_project, "Receipt Reversal", 10_000, reverses=receipt.name),
+    )
+
+    draft_receipt = _event(project, "Receipt", 50_000)
+    _expect_throws(
+        "reversal: a reversal of an unsubmitted event is refused",
+        lambda: _event(project, "Receipt Reversal", 10_000, reverses=draft_receipt.name),
+    )
+
+    too_big = _event(project, "Receipt Reversal", 150_000, reverses=receipt.name)
+    ceiling_message = _throws_message(
+        "reversal: a reversal above the original amount is refused",
+        too_big.submit,
+    )
+    _check(
+        "reversal: the refusal names the original and what remains",
+        "₹1,00,000.00" in ceiling_message,
+    )
+
+    _submitted(project, "Receipt Reversal", 40_000, reverses=receipt.name)
+    partial = get_project_financials(project)
+    _check(
+        "reversal: a partial reversal is accepted and the figures reflect it",
+        partial["received"] == 60_000.00 and partial["balance"] == 60_000.00,
+    )
+
+    remainder_message = _throws_message(
+        "reversal: a second reversal above what remains of the same event is refused",
+        _event(project, "Receipt Reversal", 70_000, reverses=receipt.name).submit,
+    )
+    _check(
+        "reversal: that refusal names the ₹60,000.00 still reversible",
+        "₹60,000.00" in remainder_message,
+    )
+
+    _submitted(project, "Receipt Reversal", 60_000, reverses=receipt.name)
+    _check(
+        "reversal: reversing exactly the remainder is accepted (positive control)",
+        get_project_financials(project)["received"] == 0.0,
+    )
+
+
+def _csr_no_cancel_checks() -> None:
+    project = _project("No-cancel checks", 200_000)
+    event = _submitted(project, "Receipt", 50_000)
+
+    message = _throws_message(
+        "ledger: cancelling a submitted fund event is refused",
+        event.cancel,
+    )
+    _check(
+        "ledger: the refusal points at the reversal entry instead",
+        "Receipt Reversal" in message,
+    )
+    _check(
+        "ledger: the event is still submitted and still counts",
+        frappe.db.get_value("CSR Fund Event", event.name, "docstatus") == 1
+        and get_project_financials(project)["received"] == 50_000.00,
+    )
+
+    _submitted(project, "Receipt Reversal", 50_000, reverses=event.name)
+    _check(
+        "ledger: the reversal route works and nets the figure to zero (positive control)",
+        get_project_financials(project)["received"] == 0.0,
+    )
+    _check(
+        "ledger: and both entries remain in the trail",
+        frappe.db.count("CSR Fund Event", {"csr_project": project, "docstatus": 1}) == 2,
+    )
+
+
+def _csr_project_state_checks() -> None:
+    closed = _project("Closed project checks", 100_000)
+    _submitted(closed, "Receipt", 100_000)
+    spend = _submitted(closed, "Expenditure", 10_000)
+    _check(
+        "project state: an Active project accepts expenditure (positive control)",
+        get_project_financials(closed)["spent"] == 10_000.00,
+    )
+
+    frappe.db.set_value("CSR Project", closed, "status", "Closed")
+
+    blocked = _event(closed, "Expenditure", 5_000)
+    blocked.override_confirmed = 1
+    blocked.override_reason = "Trying to force it through."
+    blocked.override_acknowledges = "anything at all"
+    _expect_throws(
+        "project state: a Closed project refuses expenditure even with the override fields set",
+        blocked.submit,
+    )
+    _submitted(closed, "Expenditure Reversal", 4_000, reverses=spend.name)
+    _check(
+        "project state: a Closed project still accepts a correcting reversal",
+        get_project_financials(closed)["spent"] == 6_000.00,
+    )
+
+    cancelled = _project("Cancelled project checks", 100_000)
+    ok_before = _submitted(cancelled, "Receipt", 20_000)
+    _check(
+        "project state: the project accepted a receipt before cancellation (positive control)",
+        get_project_financials(cancelled)["received"] == 20_000.00,
+    )
+    frappe.db.set_value("CSR Project", cancelled, "status", "Cancelled")
+
+    _expect_throws(
+        "project state: a Cancelled project refuses a receipt",
+        _event(cancelled, "Receipt", 1_000).submit,
+    )
+    _expect_throws(
+        "project state: a Cancelled project refuses an expenditure",
+        _event(cancelled, "Expenditure", 1_000).submit,
+    )
+    _expect_throws(
+        "project state: a Cancelled project refuses even a reversal",
+        _event(
+            cancelled, "Receipt Reversal", 1_000, reverses=ok_before.name
+        ).submit,
+    )
+
+
+def _csr_opportunity_checks() -> None:
+    funder = _funder("Synthetic Funder for the pipeline")
+
+    declined = frappe.get_doc(
+        {
+            "doctype": "CSR Opportunity",
+            "funder": funder,
+            "title": "Paediatric cath lab consumables",
+            "stage": "In Discussion",
+        }
+    ).insert()
+    declined.stage = "Declined"
+    _expect_throws("opportunity: Declined with no reason is refused", declined.save)
+    declined.reload()
+    declined.stage = "Declined"
+    declined.decline_reason = "Funder redirected its CSR budget to education."
+    declined.save()
+    _check(
+        "opportunity: Declined with a reason is accepted (positive control)",
+        frappe.db.get_value("CSR Opportunity", declined.name, "stage") == "Declined",
+    )
+
+    _expect_throws(
+        "opportunity: converting a non-Sanctioned opportunity is refused",
+        lambda: convert_to_project(declined.name),
+    )
+
+    opportunity = frappe.get_doc(
+        {
+            "doctype": "CSR Opportunity",
+            "funder": funder,
+            "title": "Neonatal ventilators",
+            "stage": "Sanctioned",
+            "expected_amount": 2_500_000,
+            "decision_on": today(),
+        }
+    ).insert()
+
+    result = convert_to_project(opportunity.name)
+    project = frappe.get_doc("CSR Project", result["csr_project"])
+    opportunity.reload()
+    _check(
+        "opportunity: convert_to_project creates the project and stamps the pointer",
+        opportunity.converted_to == project.name
+        and project.funder == funder
+        and flt(project.sanctioned_amount, 2) == 2_500_000.00
+        and project.status == "Active",
+    )
+
+    second_message = _throws_message(
+        "opportunity: a second conversion is refused",
+        lambda: convert_to_project(opportunity.name),
+    )
+    _check(
+        "opportunity: the refusal names the project already created",
+        project.name in second_message,
+    )
+    _check(
+        "opportunity: and no second project was created",
+        frappe.db.count("CSR Project", {"project_title": "Neonatal ventilators"}) == 1,
+    )
+
+    opportunity.reload()
+    opportunity.converted_to = None
+    _expect_throws(
+        "opportunity: clearing converted_to by a direct save is refused",
+        opportunity.save,
+    )
+    _expect_throws(
+        "opportunity: creating one already converted is refused",
+        lambda: frappe.get_doc(
+            {
+                "doctype": "CSR Opportunity",
+                "funder": funder,
+                "title": "Born converted",
+                "stage": "Sanctioned",
+                "converted_to": project.name,
+            }
+        ).insert(),
+    )
+
+
+def _csr_obligation_checks() -> None:
+    project = _project("Obligation checks", 300_000)
+
+    overdue = frappe.get_doc(
+        {
+            "doctype": "CSR Reporting Obligation",
+            "csr_project": project,
+            "description": "Utilisation certificate for the first tranche",
+            "due_on": add_days(today(), -1),
+        }
+    ).insert()
+    due_today = frappe.get_doc(
+        {
+            "doctype": "CSR Reporting Obligation",
+            "csr_project": project,
+            "description": "Quarterly progress note",
+            "due_on": today(),
+        }
+    ).insert()
+    future = frappe.get_doc(
+        {
+            "doctype": "CSR Reporting Obligation",
+            "csr_project": project,
+            "description": "Annual impact summary",
+            "due_on": add_days(today(), 1),
+        }
+    ).insert()
+
+    _check(
+        "obligation: due yesterday with nothing submitted is overdue",
+        get_obligation_state(overdue.name)["overdue"] is True,
+    )
+    _check(
+        "obligation: due today is not yet overdue",
+        get_obligation_state(due_today.name)["overdue"] is False,
+    )
+    _check(
+        "obligation: due tomorrow is not overdue",
+        get_obligation_state(future.name)["overdue"] is False,
+    )
+
+    overdue.submitted_on = add_days(today(), -2)
+    overdue.save()
+    _check(
+        "obligation: once submitted it is no longer overdue, however late the due date",
+        get_obligation_state(overdue.name)["overdue"] is False,
+    )
+    _check(
+        "obligation: overdue is derived, so the same row reads overdue as of an earlier date",
+        get_obligation_state(future.name, as_of=add_days(today(), 5))["overdue"] is True,
+    )
+
+    _expect_throws(
+        "obligation: verifying something with nothing submitted is refused",
+        lambda: mark_verified(future.name),
+    )
+    _expect_throws(
+        "obligation: creating one already verified is refused",
+        lambda: frappe.get_doc(
+            {
+                "doctype": "CSR Reporting Obligation",
+                "csr_project": project,
+                "description": "Born verified",
+                "due_on": today(),
+                "verified_by": "Administrator",
+                "verified_on": today(),
+            }
+        ).insert(),
+    )
+    _expect_throws(
+        "obligation: a verification date with no verifier is refused",
+        lambda: frappe.get_doc(
+            {
+                "doctype": "CSR Reporting Obligation",
+                "csr_project": project,
+                "description": "Date but nobody",
+                "due_on": today(),
+                "verified_on": today(),
+            }
+        ).insert(),
+    )
+    _expect_throws(
+        "obligation: an unknown verifier is refused",
+        lambda: mark_verified(overdue.name, verified_by="nobody@example.invalid"),
+    )
+
+    verified = mark_verified(overdue.name)
+    state = get_obligation_state(overdue.name)
+    _check(
+        "obligation: mark_verified records a named person and a date (positive control)",
+        verified["verified_by"] == "Administrator"
+        and state["verified"] is True
+        and state["verified_on"] == today(),
+    )
+
+    double_message = _throws_message(
+        "obligation: a second verification is refused",
+        lambda: mark_verified(overdue.name),
+    )
+    _check(
+        "obligation: the refusal names who verified it",
+        "Administrator" in double_message,
+    )
+
+    overdue.reload()
+    overdue.verified_by = None
+    _expect_throws(
+        "obligation: clearing the verifier by a direct save is refused",
+        overdue.save,
+    )
+
+
+def _csr_report_parity_checks() -> None:
+    """The report and the document method must agree, because they share the
+    one summing function. A second implementation is exactly how the two
+    drift, so this asserts they have not."""
+    project = _project(
+        "Report parity checks",
+        1_000_000,
+        tranches=[
+            {"expected_on": add_days(today(), -10), "expected_amount": 400_000},
+            {"expected_on": add_days(today(), 30), "expected_amount": 600_000},
+        ],
+    )
+    _submitted(project, "Receipt", 250_000)
+    _submitted(project, "Expenditure", 100_000)
+    frappe.get_doc(
+        {
+            "doctype": "CSR Reporting Obligation",
+            "csr_project": project,
+            "description": "Late utilisation certificate",
+            "due_on": add_days(today(), -3),
+        }
+    ).insert()
+
+    method = get_project_financials(project)
+    _check(
+        "financials: received/spent/balance computed from the ledger",
+        method["received"] == 250_000.00
+        and method["spent"] == 100_000.00
+        and method["balance"] == 150_000.00,
+    )
+    _check(
+        "financials: the first tranche is overdue and short by ₹1,50,000",
+        method["tranches"][0]["overdue"] is True
+        and method["tranches"][0]["shortfall"] == 150_000.00,
+    )
+    _check(
+        "financials: the future tranche is not overdue",
+        method["tranches"][1]["overdue"] is False,
+    )
+    _check(
+        "financials: the obligation is reported overdue",
+        method["obligations"][0]["overdue"] is True,
+    )
+
+    _columns, rows = report_execute({})
+    row = next(r for r in rows if r["csr_project"] == project)
+    _check(
+        "report: the portfolio report agrees with the document method, figure for figure",
+        row["received"] == method["received"]
+        and row["spent"] == method["spent"]
+        and row["balance"] == method["balance"]
+        and row["sanctioned"] == method["sanctioned"],
+    )
+    _check(
+        "report: and counts the same overdue tranche and report",
+        row["overdue_tranches"] == 1 and row["overdue_reports"] == 1,
+    )
+    _check(
+        "report: the funder filter still returns the project (positive control)",
+        any(
+            r["csr_project"] == project
+            for r in report_execute({"funder": row["funder"]})[1]
+        ),
+    )
+    _check(
+        "report: a different funder's filter excludes it",
+        not any(
+            r["csr_project"] == project
+            for r in report_execute({"funder": _funder("Unrelated funder")})[1]
+        ),
+    )
+
+
+def _csr_no_stored_total_checks() -> None:
+    """No aggregate is stored — asserted against the real table columns, the
+    same way the reference build asserted it against information_schema."""
+    forbidden = {
+        "received",
+        "received_total",
+        "spent",
+        "spent_total",
+        "balance",
+        "grand_total",
+        "total_received",
+        "total_spent",
+    }
+    columns = {row[0] for row in frappe.db.sql("DESCRIBE `tabCSR Project`")}
+    _check(
+        "no stored aggregate: CSR Project has no received/spent/balance column",
+        not (columns & forbidden),
+    )
+    _check(
+        "no stored aggregate: it does carry the sanction, which is a declaration not a rollup",
+        "sanctioned_amount" in columns,
+    )
+
+    tranche_columns = {row[0] for row in frappe.db.sql("DESCRIBE `tabCSR Tranche`")}
+    _check(
+        "no stored aggregate: CSR Tranche stores no received figure and no overdue flag",
+        not (tranche_columns & {"received", "received_to_date", "overdue", "status"}),
+    )
+
+    obligation_columns = {
+        row[0] for row in frappe.db.sql("DESCRIBE `tabCSR Reporting Obligation`")
+    }
+    _check(
+        "no stored aggregate: CSR Reporting Obligation stores no overdue flag",
+        "overdue" not in obligation_columns,
+    )
+
+
+def _csr_lock_order_checks() -> None:
+    """Genuine concurrency is not drivable from a single bench process (the
+    same limitation Phase 2 documented), so this is the code-level stand-in
+    the audit asked for: the FOR UPDATE read of the project row must come
+    before anything is summed, and the sums themselves must be locking reads
+    — a non-locking read after the lock is served from the pre-lock snapshot
+    under REPEATABLE READ, which is the hole the Phase 2 re-audit found.
+    """
+    source = inspect.getsource(CSRFundEvent._check_reversal_ceiling_and_warnings)
+    lock_at = source.find("for_update=True")
+    totals_at = source.find("project_event_totals(")
+    _check(
+        "p3-lock: the project row is locked (for_update) before any sum is taken",
+        lock_at != -1 and totals_at != -1 and lock_at < totals_at,
+    )
+    _check(
+        "p3-lock: the totals read inside the lock is itself a locking read",
+        "project_event_totals(self.csr_project, for_update=True)" in source,
+    )
+
+    ceiling_source = inspect.getsource(CSRFundEvent._check_reversal_ceiling)
+    _check(
+        "p3-lock: the reversal ceiling sums prior reversals with FOR UPDATE",
+        "FOR UPDATE" in ceiling_source,
+    )
+
+    convert_source = inspect.getsource(convert_to_project)
+    lock_at2 = convert_source.find("for_update=True")
+    insert_at2 = convert_source.find('"doctype": "CSR Project"')
+    _check(
+        "p3-lock: convert_to_project locks its own row before inserting the project",
+        lock_at2 != -1 and insert_at2 != -1 and lock_at2 < insert_at2,
+    )
+
+    verify_source = inspect.getsource(mark_verified)
+    lock_at3 = verify_source.find("for_update=True")
+    save_at3 = verify_source.find("doc.save()")
+    _check(
+        "p3-lock: mark_verified locks its own row before stamping the verification",
+        lock_at3 != -1 and save_at3 != -1 and lock_at3 < save_at3,
     )

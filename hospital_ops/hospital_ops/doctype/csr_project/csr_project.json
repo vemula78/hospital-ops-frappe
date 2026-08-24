@@ -1,0 +1,110 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:CSRP-{#####}",
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "project_title",
+  "funder",
+  "status",
+  "column_break_head",
+  "sanctioned_amount",
+  "sanctioned_on",
+  "sanction_reference",
+  "section_tranches",
+  "tranches"
+ ],
+ "fields": [
+  {
+   "fieldname": "project_title",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Project Title",
+   "reqd": 1
+  },
+  {
+   "fieldname": "funder",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Funder",
+   "options": "CSR Funder",
+   "reqd": 1
+  },
+  {
+   "default": "Active",
+   "description": "Closed refuses further expenditure. Cancelled refuses every fund event, with no override.",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Active\nClosed\nCancelled",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Received and spent are NOT stored on this document. They are computed from the submitted CSR Fund Event ledger — see the CSR Project Financials report.",
+   "fieldname": "sanctioned_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Sanctioned Amount",
+   "reqd": 1
+  },
+  {
+   "fieldname": "sanctioned_on",
+   "fieldtype": "Date",
+   "label": "Sanctioned On",
+   "reqd": 1
+  },
+  {
+   "fieldname": "sanction_reference",
+   "fieldtype": "Data",
+   "label": "Sanction Reference"
+  },
+  {
+   "fieldname": "section_tranches",
+   "fieldtype": "Section Break",
+   "label": "Expected Tranches"
+  },
+  {
+   "fieldname": "tranches",
+   "fieldtype": "Table",
+   "label": "Tranches",
+   "options": "CSR Tranche"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Hospital Ops",
+ "name": "CSR Project",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "project_title",
+ "track_changes": 1
+}

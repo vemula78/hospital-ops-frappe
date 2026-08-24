@@ -1,0 +1,116 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:CSRO-{#####}",
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "funder",
+  "title",
+  "stage",
+  "column_break_head",
+  "expected_amount",
+  "decision_on",
+  "converted_to",
+  "section_reasons",
+  "decline_reason",
+  "notes"
+ ],
+ "fields": [
+  {
+   "fieldname": "funder",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Funder",
+   "options": "CSR Funder",
+   "reqd": 1
+  },
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Title",
+   "reqd": 1
+  },
+  {
+   "default": "Prospect",
+   "fieldname": "stage",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Stage",
+   "options": "Prospect\nProposal Sent\nIn Discussion\nSanctioned\nDeclined",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "expected_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Expected Amount"
+  },
+  {
+   "fieldname": "decision_on",
+   "fieldtype": "Date",
+   "label": "Decision On"
+  },
+  {
+   "description": "Stamped by convert_to_project(). Set once, under a row lock; a direct save cannot set or change it.",
+   "fieldname": "converted_to",
+   "fieldtype": "Link",
+   "label": "Converted To",
+   "no_copy": 1,
+   "options": "CSR Project",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_reasons",
+   "fieldtype": "Section Break"
+  },
+  {
+   "depends_on": "eval:doc.stage == \"Declined\"",
+   "description": "Required when the stage is Declined. A decline without a reason is an unexplained gap in the pipeline.",
+   "fieldname": "decline_reason",
+   "fieldtype": "Small Text",
+   "label": "Decline Reason"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Hospital Ops",
+ "name": "CSR Opportunity",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "title",
+ "track_changes": 1
+}
