@@ -229,11 +229,26 @@ Two conditions on the go:
    is silent, it affects exactly the class of purchase this workspace exists for, and it
    needs a `before_submit` hook — i.e. the "no custom code" premise does not survive
    first contact.
+
+   **Closed, Phase 6, 24-Aug-2026.** `hooks.py` wires `doc_events` →
+   `purchase_receipt_guard.guard_non_stock_over_receipt` on `Purchase Receipt`
+   `before_submit` — the one sanctioned touch outside `hospital_ops`'s own
+   doctypes. It reproduces this section's exact evidence in `run_phase6_tests`
+   (over-receipt refused naming the figures; exactly-at-limit and
+   within-configured-allowance accepted; a stock-item over-receipt still
+   refused by core, not by this hook) and costs zero queries on a receipt with
+   no non-stock PO-linked row. See the README's Phase 6 section for the full
+   design and `hospital_ops/hospital_ops/purchase_receipt_guard.py` for the
+   code, which cites the exact core source lines this gap was read from.
 2. **Decide explicitly what to do about the forced accounting.** Either accept a
    permanently unclearable *Received But Not Billed* balance as cosmetic noise, or agree
    that Purchase Invoices will be entered to close it, or disable perpetual inventory for
    this company. Leaving it undecided means the workspace shows accounting figures nobody
    owns.
+
+   **Still open.** Nothing in Phases 2–6 touches accounting or the Buying flow's GL
+   behaviour — this remains the site owner's decision to make, not something a later
+   phase resolved by default.
 
 If both are acceptable, proceed to Phase 2. If the second one is not — if a hospital-side
 capital ledger that disagrees with the official finance system is unacceptable at any

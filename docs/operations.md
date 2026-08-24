@@ -99,10 +99,26 @@ sudo docker exec -u frappe -w /home/frappe/frappe-bench frappe_docker-backend-1 
   bench --site frontend execute hospital_ops.hospital_ops.tests_runner.run_phase5_tests
 ```
 
+Phase 6 (Weekly Review, dashboard/notification fixtures, the over-receipt
+hook) has its own suite, 64 checks, same shape. It also expects the
+dashboard/notification fixture records to already exist — a fresh
+`bench migrate` installs them from `hospital_ops/fixtures/*.json`, but on a
+site that has never run that migration, create them once by hand first:
+
+```bash
+sudo docker exec -u frappe -w /home/frappe/frappe-bench frappe_docker-backend-1 \
+  bench --site frontend execute hospital_ops.hospital_ops.dashboard_setup.ensure_phase6_number_cards_and_dashboard
+sudo docker exec -u frappe -w /home/frappe/frappe-bench frappe_docker-backend-1 \
+  bench --site frontend execute hospital_ops.hospital_ops.notification_setup.ensure_phase6_notifications
+sudo docker exec -u frappe -w /home/frappe/frappe-bench frappe_docker-backend-1 \
+  bench --site frontend execute hospital_ops.hospital_ops.tests_runner.run_phase6_tests
+```
+
 Then check the public URL, not only the console — see above for why. The
-four that matter after a restart: `/api/method/ping` returns pong, `/login`
+checks that matter after a restart: `/api/method/ping` returns pong, `/login`
 returns 200, `/app/research-study` and `/app/hospital-sign` resolve 200
 (following the redirect —
-an unauthenticated request 301s to `/login` first, which is expected), and
-`https://sssihms.org` (the hospital's public WordPress site, same VM) still
-returns 200.
+an unauthenticated request 301s to `/login` first, which is expected),
+`/app/query-report/Weekly Review` and `/app/dashboard-view/Hospital Ops`
+resolve 200 the same way, and `https://sssihms.org` (the hospital's public
+WordPress site, same VM) still returns 200.

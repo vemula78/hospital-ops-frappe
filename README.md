@@ -685,6 +685,133 @@ must extract the tarball at **both**, or the app half-loads: extracting only at
 the deeper level gives `ModuleNotFoundError: No module named
 'hospital_ops.hooks'` on `bench migrate`. See `docs/operations.md`.
 
+### Phase 6 — Weekly Review, dashboard, notifications, and the over-receipt hook
+
+**Done, 24-Aug-2026.** The final phase: a portfolio report, a dashboard,
+Notification records, and the one piece of procurement hardening the Phase 1
+gate deferred. Nothing here introduces a new doctype of its own — it reports
+on and hardens what Phases 2–5 already built.
+
+**Weekly Review** (Script Report, module `Hospital Ops`, no per-record
+ref_doctype in spirit — see the deviation note below) is a portfolio walk
+mirroring the Next.js application's `review.ts`: one row per item needing
+attention, tagged with a `section` and a `how_computed` string naming the
+exact function that derived it. The rule this enforces is the one that runs
+through every phase here — **the report reuses the module's own derivation
+function and cannot disagree with it**:
+
+| Section | Reused from |
+| --- | --- |
+| Quick Captures (open, oldest first) | plain `frappe.get_list`, status = Open |
+| Waiting For (due a chase, most-overdue-first) | plain `frappe.get_list`, `follow_up_on <= today()` |
+| CSR Reporting Obligations overdue | `csr_reporting_obligation.get_obligation_state()` |
+| CSR Tranches overdue | `csr_financials.tranche_states()` |
+| Research Ethics expiring (60 days) or expired | `research_ethics.ethics_standing()` |
+| Hospital Signs blocked or inspection due | `build_publish.sign_readiness()` / `sign_blockers()` |
+| Hospital Web Pages missing something to publish | `build_publish.missing_for_publication()` |
+| Software Project Records (Active) with an untested requirement | `build_publish.uat_coverage()` |
+
+**Deviation, recorded rather than hidden.** The brief asked for no
+`ref_doctype`; core Frappe's `Report` doctype declares it mandatory
+(`reqd: 1`), so `weekly_review.json` sets it to `Quick Capture` as a nominal
+anchor only, the same accommodation "Build and Publish Status" already made
+for `Hospital Sign`. It gates nothing — every section lists through its own
+doctype's `frappe.get_list`, and the report itself is restricted to
+`System Manager`.
+
+**Dashboard "Hospital Ops"** ships as an app fixture (`hooks.py` `fixtures`,
+filtered by exact record name so a `bench migrate` on this 16-app shared
+bench cannot sweep up anything that is not this app's own — verified against
+the live counts before and after). Four Number Cards, each a plain filtered
+count:
+
+| Card | Filter |
+| --- | --- |
+| Open Quick Captures | `status = Open` |
+| Waiting For (Status Waiting) | `status = Waiting` — see caveat below |
+| Draft CSR Fund Events | `docstatus = 0` |
+| Active Research Studies | `status = Active` |
+
+Plus one chart, "Quick Captures Opened" (weekly count over the last
+quarter) — added only because core's `Dashboard` doctype refuses to insert
+with an empty `charts` table (`MandatoryError`, confirmed against this
+container, not assumed); a cards-only dashboard is not something core
+supports, so this is one genuinely useful trend rather than a placeholder.
+
+**Two derived figures are deliberately not Number Cards, and each is named
+here rather than quietly approximated:**
+
+- *Waiting For due a chase* (`follow_up_on <= today()`) cannot be expressed
+  in a static Number Card's `filters_json` — that field is a fixed value
+  written once, not a live expression re-evaluated on each page load, so a
+  hardcoded "today" would be correct on the day it was created and wrong
+  every day after. The card above counts every item still `Waiting`,
+  **not** only those due right now; the Weekly Review report's "Waiting
+  For" section is the one place the true, date-bounded figure is shown.
+- *CSR Reporting Obligations overdue* has no card at all. Overdue is a
+  boolean derived from two fields together (`due_on` in the past **and**
+  nothing submitted), which no single-field Number Card filter can express.
+  Presenting an approximation as the true figure is exactly the
+  "plausible-but-unreconciled number" this app's own rules refuse elsewhere
+  — so it is skipped as a card, and the Weekly Review report (which calls
+  `get_obligation_state()`, the same helper the document itself uses) is
+  the only place this figure is shown.
+
+**Notifications**, also shipped as app fixtures (same name-filtered
+scoping), all `channel = System Notification` — **SMTP is deliberately
+unconfigured on this site and this phase does not enable it**, an ADR-worthy
+decision recorded in `notification_setup.py` rather than defaulted into
+silently. A mail decision is separate, later work for the site owner.
+
+| Notification | Fires | Condition (so a resolved record stops firing) |
+| --- | --- | --- |
+| Waiting For Follow-up Arrived | `follow_up_on` reached | `status == "Waiting"` |
+| CSR Reporting Obligation Due Soon | 7 days before `due_on` | nothing submitted yet |
+| Research Ethics Submission Expiring | 60 days before `valid_until` | `decision == "Approved"` |
+| Hospital Sign Inspection Due | `next_inspection_on` reached | (date match is sufficient) |
+
+**The over-receipt hook — the Phase 1 gate condition, closed.**
+`erpnext-phase1-gate.md` §3.1 found that ERPNext silently accepts
+over-receipt on FIXED-ASSET (non-stock) Purchase Order lines: 4 received
+against 2 ordered, submitted without a warning, while the identical
+over-receipt on a stock item was correctly refused. Reading core's own
+source (`erpnext/controllers/status_updater.py::fetch_items_with_pending_qty`)
+confirms why: the query that finds over-receipt candidates joins `Item` and
+filters `is_stock_item == 1` before the allowance check ever runs — a
+non-stock line never enters it.
+
+`hooks.py` wires a `doc_events` `before_submit` hook on `Purchase Receipt`
+— **the one sanctioned touch outside this app's own doctypes** — to
+`purchase_receipt_guard.guard_non_stock_over_receipt`. For every item row
+with a `purchase_order` reference whose Item is non-stock, it locks the PO
+Item row first (`for_update=True`, this app's usual discipline), sums qty
+already received against that line across *other submitted* Purchase
+Receipts as a post-lock `FOR UPDATE` read, adds this document's own row, and
+refuses if the total exceeds the ordered qty plus whatever allowance is
+configured — mirroring core's own tolerance logic
+(`Item.over_delivery_receipt_allowance` overriding `Stock Settings`'s global
+one) rather than inventing a stricter rule that could disagree with it.
+**It never fires for stock items** (core already guards those), and it
+costs zero queries on a receipt with no non-stock PO-linked row.
+
+Verification: `run_phase6_tests`, **64 checks, 0 failures**, rolled back at
+the end. Every Weekly Review section carries a positive control (the seeded
+item appears, tagged with the right section) and a negative control (a
+resolved/processed/published/fully-received counterpart does not), plus a
+parity spot-check that the CSR obligation row agrees with
+`get_obligation_state()` for the same record. The over-receipt hook is
+tested with synthetic Items and Suppliers created fresh inside the
+rollback (not the Phase 1 console masters, which would make the test
+depend on that session's state surviving unmodified): within-order accepted,
+over-receipt refused naming the item and both figures, exactly-at-the-limit
+accepted, a configured 10% allowance accepted inside and refused outside,
+a stock-item over-receipt still refused **by core** (asserted by the
+absence of this app's own marker string in the message, not merely "an
+exception was raised"), and a receipt with no PO reference untouched.
+`run_phase2_tests` (32/32), `run_phase3_tests` (111/111), `run_phase4_tests`
+(42/42) and `run_phase5_tests` (142/142) all re-ran clean afterwards — no
+regression, no residual data (see `docs/operations.md`).
+
 ### Contributing
 
 This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:
