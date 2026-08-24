@@ -58,11 +58,57 @@ said on each chase rather than overwriting the one promise on file.
   Refuses if the row already has a `todo`, or if `row_name` does not exist on
   the meeting.
 
-Every whitelisted method re-checks `frappe.has_permission(..., doc=doc,
-throw=True)` on the loaded document rather than trusting the doctype-level
-grant alone. Server-side tests (`test_*.py` per doctype, using
+Every whitelisted method loads its document and checks permission through
+`hospital_ops/hospital_ops/permissions.py::get_doc_for_action` (see the Codex
+audit fixes below) rather than trusting the doctype-level grant alone.
+Server-side tests (`test_*.py` per doctype, using
 `frappe.tests.IntegrationTestCase` — Frappe v16 renamed `FrappeTestCase`)
 cover both the negative case and its positive control for each invariant.
+
+#### Codex audit fixes (post-commit `89587f5`/`d869c41`)
+
+An independent Codex audit over those two commits found four issues, all
+fixed in place:
+
+- **P2-1 / P2-2 — TOCTOU on the "does it already have one" checks.** Two
+  concurrent calls to `process_into_todo` could both read `status = "Open"`
+  before either wrote back, both insert a ToDo, and both mark the capture
+  Processed; the equivalent was true of `create_todo_from_decision` racing
+  on a decision row's `todo` field. Both methods now take a row lock with
+  `frappe.db.get_value(..., for_update=True)` *before* the re-check, and
+  read the value that check acts on from that locked read (quick_capture.py)
+  or from a `doc.reload()` taken after the lock (meeting_record.py) — not
+  from a doc loaded earlier. A second concurrent call blocks on the lock
+  until the first commits, then sees the post-write state and is refused.
+  **Concurrency guarantee, tested by code review, not by driving genuine
+  concurrency**: `bench execute` runs one request per process on this bench,
+  so there is no practical way to fire two overlapping calls in the test
+  environment. `tests_runner.py`'s `_p2_lock_order_checks` instead asserts,
+  by reading the actual function source, that the `for_update=True` locked
+  read appears before the `ToDo` insert in both methods — a proxy for "the
+  lock is taken before the window it is meant to close," not a substitute
+  for a real concurrency test. If this ever needs a real test, it needs two
+  separate DB connections issuing overlapping transactions, which the
+  request-per-process test harness here cannot drive.
+- **P3-1 — existence oracle.** `frappe.get_doc` on a missing name raises
+  `DoesNotExistError`; `frappe.has_permission(..., throw=True)` on an
+  existing-but-unauthorized one raises `PermissionError` — distinguishable,
+  and the sequential `CAP-`/`WF-`/`MTG-` names make enumeration cheap. All
+  three whitelisted methods now go through `get_doc_for_action`, which
+  raises the identical `PermissionError` with the identical message for
+  both cases, so a caller cannot tell "does not exist" from "not allowed to
+  touch." The permission checks it wraps were already correct and are
+  unchanged.
+- **P3-2 — the processed pointer was only UI-read-only.** `read_only` in the
+  doctype JSON is a form hint, not server-side enforcement; a direct REST
+  save could overwrite `processed_into_doctype`/`processed_into` or flip
+  `status` back to `Open`. `QuickCapture.validate()` now: (a) restricts
+  `processed_into_doctype` to `("ToDo", "Task", "Waiting For", "Meeting
+  Record")`; (b) once the *stored* (database) status is `Processed` or
+  `Discarded`, refuses any change to `status`/`processed_into_doctype`/
+  `processed_into` unless `self.flags.via_process_method` is set — and that
+  flag is set only inside `process_into_todo`, immediately before its own
+  `save()`. Other fields (e.g. `capture_text`) stay freely editable.
 
 **Known obstruction on the shared evaluation site**: `bench run-tests` for
 `Waiting For` and `Meeting Record` fails during `IntegrationTestCase`'s own
@@ -76,17 +122,19 @@ configuration work happening on the same site, and it overlaps the synthetic
 this app, and present with or without `--skip-before-tests` (that flag only
 skips erpnext's own `before_tests` hook, not this per-doctype fixture walk).
 `Quick Capture` has no such Link fields and runs cleanly under `run-tests`.
-`hospital_ops/hospital_ops/tests_runner.py` re-checks the same 15 invariants
-(6 Quick Capture + 5 Waiting For + 4 Meeting Record assertions, each negative
-case paired with its positive control) with plain assertions instead of
-`IntegrationTestCase`, which never triggers that walk, rolling back
-regardless of outcome:
+`hospital_ops/hospital_ops/tests_runner.py` re-checks the same invariants
+(the original 15 — 6 Quick Capture + 5 Waiting For + 4 Meeting Record, each
+negative case paired with its positive control — plus 8 more added for the
+Codex audit fixes above: 3 for the P3-1 existence oracle, 3 for the P3-2
+state guard, 2 for the P2-1/P2-2 lock-order code check) with plain
+assertions instead of `IntegrationTestCase`, which never triggers that walk,
+rolling back regardless of outcome:
 
 ```bash
 bench --site frontend execute hospital_ops.hospital_ops.tests_runner.run_phase2_tests
 ```
 
-All 15 passed. The real `test_*.py` suites remain the primary tests and
+All 23 passed. The real `test_*.py` suites remain the primary tests and
 should be re-run with `bench run-tests` once the shared site's Fiscal Year
 conflict is resolved by whoever owns that configuration.
 

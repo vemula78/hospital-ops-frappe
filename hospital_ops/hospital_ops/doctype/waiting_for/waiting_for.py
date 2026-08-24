@@ -5,6 +5,8 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import getdate, today
 
+from hospital_ops.hospital_ops.permissions import get_doc_for_action
+
 
 class WaitingFor(Document):
     def validate(self) -> None:
@@ -39,8 +41,7 @@ def log_follow_up(name: str, note: str | None = None, new_promised_on: str | Non
     Refused once the item is no longer Waiting: a follow-up on something
     already Resolved or Cancelled has nothing left to chase.
     """
-    doc = frappe.get_doc("Waiting For", name)
-    frappe.has_permission(doctype="Waiting For", ptype="write", doc=doc, throw=True)
+    doc = get_doc_for_action("Waiting For", name, ptype="write")
 
     if doc.status != "Waiting":
         frappe.throw(

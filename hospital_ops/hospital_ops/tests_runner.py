@@ -26,6 +26,8 @@ obstruction. Everything it creates is rolled back at the end regardless of
 outcome, pass or fail.
 """
 
+import inspect
+
 import frappe
 from frappe.utils import add_days, today
 
@@ -36,6 +38,7 @@ from hospital_ops.hospital_ops.doctype.quick_capture.quick_capture import (
     process_into_todo,
 )
 from hospital_ops.hospital_ops.doctype.waiting_for.waiting_for import log_follow_up
+from hospital_ops.hospital_ops.permissions import get_doc_for_action
 
 _PASS = []
 _FAIL = []
@@ -62,6 +65,9 @@ def run_phase2_tests() -> None:
         _quick_capture_checks()
         _waiting_for_checks()
         _meeting_record_checks()
+        _p31_existence_oracle_checks()
+        _p32_state_guard_checks()
+        _p2_lock_order_checks()
     finally:
         frappe.db.rollback()
 
@@ -192,4 +198,100 @@ def _meeting_record_checks() -> None:
     _expect_throws(
         "meeting_record: an unknown decision row is refused",
         lambda: create_todo_from_decision(meeting.name, "not-a-real-row"),
+    )
+
+
+def _p31_existence_oracle_checks() -> None:
+    """Codex audit P3-1: a missing document and an existing-but-unauthorized
+    one must raise the identical PermissionError, so a caller cannot use the
+    response to tell which case it is (and so enumerate the sequential
+    naming series).
+    """
+    doc = frappe.get_doc(
+        {"doctype": "Quick Capture", "capture_text": "For the P3-1 existence-oracle check"}
+    ).insert()
+
+    message_for_missing = None
+    try:
+        get_doc_for_action("Quick Capture", "CAP-99999", ptype="write")
+    except frappe.PermissionError as exc:
+        message_for_missing = str(exc)
+
+    message_for_unauthorized = None
+    frappe.set_user("Guest")
+    try:
+        get_doc_for_action("Quick Capture", doc.name, ptype="write")
+    except frappe.PermissionError as exc:
+        message_for_unauthorized = str(exc)
+    finally:
+        frappe.set_user("Administrator")
+
+    _check(
+        "p3-1: a missing name raises PermissionError (not DoesNotExistError)",
+        message_for_missing is not None,
+    )
+    _check(
+        "p3-1: an existing-but-unauthorized name raises PermissionError",
+        message_for_unauthorized is not None,
+    )
+    _check(
+        "p3-1: both raise the identical message — no existence oracle",
+        message_for_missing is not None and message_for_missing == message_for_unauthorized,
+    )
+
+
+def _p32_state_guard_checks() -> None:
+    """Codex audit P3-2: read_only in the doctype JSON is a UI hint only.
+    Once the stored status is Processed/Discarded, a direct save must not be
+    able to change status or the processed_into pointer, and only an
+    allow-listed doctype may ever be named in processed_into_doctype.
+    """
+    doc = frappe.get_doc(
+        {"doctype": "Quick Capture", "capture_text": "For the P3-2 state-guard checks"}
+    ).insert()
+    process_into_todo(doc.name)
+    doc.reload()
+    _check(
+        "p3-2: the whitelisted path still processes a capture (positive control)",
+        doc.status == "Processed" and bool(doc.processed_into),
+    )
+
+    doc.status = "Open"
+    _expect_throws(
+        "p3-2: a direct save flipping Processed back to Open is refused",
+        doc.save,
+    )
+
+    other = frappe.get_doc(
+        {"doctype": "Quick Capture", "capture_text": "For the disallowed-doctype check"}
+    ).insert()
+    other.processed_into_doctype = "User"
+    _expect_throws(
+        "p3-2: a disallowed processed_into_doctype is refused",
+        other.save,
+    )
+
+
+def _p2_lock_order_checks() -> None:
+    """Codex audit P2-1/P2-2: genuine concurrency is not practical to drive
+    on this bench (a single request-response process per bench execute
+    call), so this is the documented fallback the audit asked for — a
+    code-level assertion that the row lock is taken, by reading the actual
+    source, before either method inserts its ToDo. See also the README's
+    "Concurrency guarantees" note for the reasoning this stands in for.
+    """
+    quick_capture_src = inspect.getsource(process_into_todo)
+    lock_at = quick_capture_src.find("for_update=True")
+    insert_at = quick_capture_src.find('"doctype": "ToDo"')
+    _check(
+        "p2-1: process_into_todo locks the row (for_update) before inserting the ToDo",
+        lock_at != -1 and insert_at != -1 and lock_at < insert_at,
+    )
+
+    meeting_record_src = inspect.getsource(create_todo_from_decision)
+    lock_at2 = meeting_record_src.find("for_update=True")
+    insert_at2 = meeting_record_src.find('"doctype": "ToDo"')
+    _check(
+        "p2-2: create_todo_from_decision locks the parent row (for_update) before inserting the ToDo",
+        lock_at2 != -1 and insert_at2 != -1 and lock_at2 < insert_at2,
     )
