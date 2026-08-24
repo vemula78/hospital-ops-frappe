@@ -58,6 +58,7 @@ from hospital_ops.hospital_ops.doctype.waiting_for.waiting_for import log_follow
 from hospital_ops.hospital_ops.permissions import get_doc_for_action
 from hospital_ops.hospital_ops.report.csr_project_financials.csr_project_financials import (
     execute as report_execute,
+    get_data as report_get_data,
 )
 
 _PASS = []
@@ -494,6 +495,9 @@ def run_phase3_tests() -> None:
         _csr_report_parity_checks()
         _csr_no_stored_total_checks()
         _csr_lock_order_checks()
+        _csr_audit_p1_immutability_checks()
+        _csr_audit_p2_locked_state_checks()
+        _csr_audit_p3_precision_and_tie_checks()
     finally:
         frappe.db.rollback()
 
@@ -1172,7 +1176,7 @@ def _csr_lock_order_checks() -> None:
     — a non-locking read after the lock is served from the pre-lock snapshot
     under REPEATABLE READ, which is the hole the Phase 2 re-audit found.
     """
-    source = inspect.getsource(CSRFundEvent._check_reversal_ceiling_and_warnings)
+    source = inspect.getsource(CSRFundEvent._check_against_locked_project)
     lock_at = source.find("for_update=True")
     totals_at = source.find("project_event_totals(")
     _check(
@@ -1204,4 +1208,233 @@ def _csr_lock_order_checks() -> None:
     _check(
         "p3-lock: mark_verified locks its own row before stamping the verification",
         lock_at3 != -1 and save_at3 != -1 and lock_at3 < save_at3,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Codex Phase 3 audit — six findings
+# ---------------------------------------------------------------------------
+#
+# Two P1s were claimed and both are disproven against this container's actual
+# frappe v16 source; the probes below prove it on the running site rather than
+# on a reading. The four remaining findings were valid and are fixed; each has
+# its check here.
+
+
+def _csr_audit_p1_immutability_checks() -> None:
+    """P1-a and P1-b: a submitted event can be neither deleted nor mutated.
+
+    **P1-a claimed** that the JSON's ``delete: 1`` makes submitted rows
+    deletable, bypassing the cancel refusal. It does not.
+    ``apps/frappe/frappe/model/delete_doc.py:289-297`` refuses any submittable
+    doctype whose ``docstatus.is_submitted()`` — "Submitted Record cannot be
+    deleted. You must Cancel it first", ``raise_exception=True`` — and since
+    ``before_cancel``/``on_cancel`` throw, cancellation is impossible, so the
+    deletion is transitively impossible. An ``on_trash`` guard was added
+    anyway as defence in depth.
+
+    **P1-b claimed** that ``frappe.client.set_value`` can mutate a submitted
+    row's amount, kind or project. It cannot: ``client.py:207-215`` ends in
+    ``doc.save()``, ``document.py:597-598`` routes a submitted save through
+    ``validate_update_after_submit()``, and
+    ``base_document.py:1270-1305`` throws ``frappe.UpdateAfterSubmitError``
+    for any field changed without ``allow_on_submit`` — and no field on this
+    doctype has it.
+    """
+    project = _project("Immutability checks", 500_000)
+    event = _submitted(project, "Receipt", 100_000)
+
+    _expect_throws(
+        "p1-a: deleting a submitted fund event is refused (core delete_doc.py:289-297)",
+        lambda: frappe.delete_doc("CSR Fund Event", event.name),
+    )
+    _check(
+        "p1-a: the event survived the deletion attempt and still counts",
+        frappe.db.exists("CSR Fund Event", event.name)
+        and get_project_financials(project)["received"] == 100_000.00,
+    )
+
+    draft = _event(project, "Receipt", 5_000)
+    frappe.delete_doc("CSR Fund Event", draft.name)
+    _check(
+        "p1-a: a draft still deletes normally, and removes nothing from the figures "
+        "(positive control)",
+        not frappe.db.exists("CSR Fund Event", draft.name)
+        and get_project_financials(project)["received"] == 100_000.00,
+    )
+
+    _expect_throws(
+        "p1-b: frappe.client.set_value cannot change a submitted event's amount "
+        "(UpdateAfterSubmitError)",
+        lambda: client_set_value("CSR Fund Event", event.name, "amount", 999_999),
+    )
+    _expect_throws(
+        "p1-b: nor its kind",
+        lambda: client_set_value("CSR Fund Event", event.name, "kind", "Expenditure"),
+    )
+    _expect_throws(
+        "p1-b: nor the project it belongs to",
+        lambda: client_set_value("CSR Fund Event", event.name, "csr_project", "CSRP-00001"),
+    )
+    _check(
+        "p1-b: the stored row is untouched after all three attempts",
+        flt(frappe.db.get_value("CSR Fund Event", event.name, "amount"), 2) == 100_000.00
+        and frappe.db.get_value("CSR Fund Event", event.name, "kind") == "Receipt"
+        and frappe.db.get_value("CSR Fund Event", event.name, "csr_project") == project,
+    )
+
+    # Positive control for the mechanism itself: the same endpoint edits a
+    # DRAFT freely, so the refusals above are the submitted state doing the
+    # work rather than set_value being broken.
+    editable = _event(project, "Receipt", 1_000)
+    client_set_value("CSR Fund Event", editable.name, "amount", 2_000)
+    _check(
+        "p1-b: the same endpoint edits a draft freely (positive control)",
+        flt(frappe.db.get_value("CSR Fund Event", editable.name, "amount"), 2) == 2_000.00,
+    )
+
+    _check(
+        "p1-a: on_trash refuses a submitted event in this app's own code, not only core's",
+        "docstatus == 1" in inspect.getsource(CSRFundEvent.on_trash),
+    )
+
+    # frappe.db.set_value is a raw UPDATE and genuinely bypasses all of this.
+    # It is not REST-whitelisted and is reachable only by server-side code or
+    # a bench console, which no app-level guard can prevent — the same class of
+    # residual as "whoever has the MariaDB root password can edit the table".
+    # Asserted here so the residual is visible rather than assumed away.
+    frappe.db.set_value("CSR Fund Event", event.name, "amount", 123, update_modified=False)
+    _check(
+        "p1-b: frappe.db.set_value DOES bypass the controller — documented residual, "
+        "not REST-reachable",
+        flt(frappe.db.get_value("CSR Fund Event", event.name, "amount"), 2) == 123.00,
+    )
+    frappe.db.set_value("CSR Fund Event", event.name, "amount", 100_000, update_modified=False)
+
+
+def _csr_audit_p2_locked_state_checks() -> None:
+    """P2-a: the project state must be decided on the locked read.
+
+    P2-b: the report must list projects with get_list, not get_all.
+    """
+    project = _project("Locked state checks", 200_000)
+    _submitted(project, "Receipt", 200_000)
+
+    # The draft is created while the project is Active; the project is then
+    # closed underneath it, exactly as a concurrent Close would. The submit
+    # must see the current state, not the one that held when the draft was
+    # written.
+    pending = _event(project, "Expenditure", 10_000)
+    frappe.db.set_value("CSR Project", project, "status", "Closed")
+    _expect_throws(
+        "p2-a: a draft written while Active is refused once the project is Closed "
+        "underneath it",
+        pending.submit,
+    )
+
+    frappe.db.set_value("CSR Project", project, "status", "Active")
+    pending.reload()
+    pending.submit()
+    _check(
+        "p2-a: the same draft submits once the project is Active again (positive control)",
+        get_project_financials(project)["spent"] == 10_000.00,
+    )
+
+    source = inspect.getsource(CSRFundEvent._check_against_locked_project)
+    lock_at = source.find("for_update=True")
+    state_at = source.find("self._check_project_state(")
+    _check(
+        "p2-a: the state refusal runs after the locking read, not before it",
+        lock_at != -1 and state_at != -1 and lock_at < state_at,
+    )
+    _check(
+        "p2-a: and it is fed the status from that locked read, not a fresh query",
+        "self._check_project_state(project.status)" in source
+        and "get_value" not in inspect.getsource(CSRFundEvent._check_project_state),
+    )
+
+    report_source = inspect.getsource(report_get_data)
+    after_get_list = report_source.split("frappe.get_list(")
+    _check(
+        "p2-b: the report lists projects with get_list, which applies permission "
+        "query conditions",
+        len(after_get_list) == 2 and after_get_list[1].lstrip().startswith('"CSR Project"'),
+    )
+    _check(
+        "p2-b: and no longer with get_all, which ignores them",
+        not any(
+            part.lstrip().startswith('"CSR Project"')
+            for part in report_source.split("frappe.get_all(")[1:]
+        ),
+    )
+
+
+def _csr_audit_p3_precision_and_tie_checks() -> None:
+    """P3-a: sub-paise amounts. P3-b: tied tranche dates."""
+    project = _project("Precision checks", 100_000)
+
+    _expect_throws(
+        "p3-a: an amount of 0.004 is refused — it would display as ₹0.00 in every total",
+        lambda: _event(project, "Receipt", 0.004),
+    )
+    _expect_throws(
+        "p3-a: 0.005 is refused too (rounding it would change the figure entered)",
+        lambda: _event(project, "Receipt", 0.005),
+    )
+    _expect_throws(
+        "p3-a: and three decimals on a real amount is refused",
+        lambda: _event(project, "Receipt", 1_000.123),
+    )
+    accepted = _submitted(project, "Receipt", 100.25)
+    _check(
+        "p3-a: two decimal places are accepted and land exactly (positive control)",
+        get_project_financials(project)["received"] == 100.25,
+    )
+    _check(
+        "p3-a: one paise is a legitimate amount",
+        flt(accepted.amount, 2) == 100.25,
+    )
+
+    # Two tranches expected on the same day: with date alone, which one
+    # carries the shortfall depended on row arrival order. It must now follow
+    # document order — the first row on the form is filled first.
+    tied_date = add_days(today(), -5)
+    tied = _project(
+        "Tied tranche dates",
+        300_000,
+        tranches=[
+            {"expected_on": tied_date, "expected_amount": 100_000, "note": "first row"},
+            {"expected_on": tied_date, "expected_amount": 200_000, "note": "second row"},
+        ],
+    )
+    _submitted(tied, "Receipt", 100_000)
+
+    states = get_project_financials(tied)["tranches"]
+    _check(
+        "p3-b: tied dates allocate in document order — the first row is satisfied",
+        states[0]["received_to_date"] == 100_000.00 and states[0]["shortfall"] == 0.0,
+    )
+    _check(
+        "p3-b: and the second row carries the whole shortfall",
+        states[1]["shortfall"] == 200_000.00 and states[1]["overdue"] is True,
+    )
+    _check(
+        "p3-b: the first row is therefore not overdue despite the past date",
+        states[0]["overdue"] is False,
+    )
+
+    repeated = [
+        tuple(state["shortfall"] for state in get_project_financials(tied)["tranches"])
+        for _repeat in range(3)
+    ]
+    _check(
+        "p3-b: repeated reads of unchanged data give the identical allocation",
+        len(set(repeated)) == 1,
+    )
+
+    _columns, rows = report_execute({})
+    row = next(r for r in rows if r["csr_project"] == tied)
+    _check(
+        "p3-b: the report counts the same single overdue tranche",
+        row["overdue_tranches"] == 1,
     )

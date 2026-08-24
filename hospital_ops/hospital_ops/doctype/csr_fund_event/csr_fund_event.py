@@ -60,8 +60,7 @@ class CSRFundEvent(Document):
         self._check_reversal_shape()
 
     def before_submit(self) -> None:
-        self._check_project_state()
-        self._check_reversal_ceiling_and_warnings()
+        self._check_against_locked_project()
 
     def before_cancel(self) -> None:
         self._refuse_cancel()
@@ -71,6 +70,27 @@ class CSRFundEvent(Document):
         # the one the build brief names. Either raising rolls the whole
         # cancellation back.
         self._refuse_cancel()
+
+    def on_trash(self) -> None:
+        """Defence in depth against deleting a submitted entry.
+
+        Frappe core already refuses this — ``delete_doc.py:289-297`` throws
+        "Submitted Record cannot be deleted. You must Cancel it first" for any
+        submittable doctype whose ``docstatus.is_submitted()`` — and because
+        cancellation is itself refused above, deleting a submitted event is
+        transitively impossible today. This ``if`` costs one branch and keeps
+        the invariant true in this app's own code rather than depending on
+        core keeping that behaviour forever. A *draft* deletes normally: a
+        draft counts for nothing, so removing one removes nothing.
+        """
+        if self.docstatus == 1:
+            frappe.throw(
+                _(
+                    "A submitted fund event cannot be deleted. The ledger is append-only: "
+                    "record a reversal entry instead."
+                ),
+                title=_("CSR Fund Event"),
+            )
 
     def _refuse_cancel(self) -> None:
         frappe.throw(
@@ -97,6 +117,18 @@ class CSRFundEvent(Document):
                     "The amount must be greater than zero. Direction is recorded in the Kind "
                     "({0}), never in the sign of the amount."
                 ).format(self.kind),
+                title=_("CSR Fund Event"),
+            )
+
+        # Sub-paise precision is a silent falsehood: 0.004 is a real submitted
+        # event that every total displays as ₹0.00, so the ledger and the page
+        # disagree and the page is the one anybody reads.
+        if flt(self.amount) != flt(self.amount, 2):
+            frappe.throw(
+                _(
+                    "Amounts are rupees and paise; more than two decimal places would be "
+                    "invisible in every total. {0} was entered."
+                ).format(self.amount),
                 title=_("CSR Fund Event"),
             )
 
@@ -161,9 +193,62 @@ class CSRFundEvent(Document):
 
     # -- submit-time checks ---------------------------------------------------
 
-    def _check_project_state(self) -> None:
-        status = frappe.db.get_value("CSR Project", self.csr_project, "status")
+    def _check_against_locked_project(self) -> None:
+        """Every submit-time decision, taken on one locked read of the project.
 
+        The order below is load-bearing, and the *source* of the values is as
+        load-bearing as the order. The ``for_update=True`` read comes first: it
+        is the lock every submitter on this project contends for. Everything
+        after it — the Closed/Cancelled refusals, the sanction figure the
+        warnings compare against — is decided on the row that read returned,
+        never on a value fetched before the lock was granted.
+
+        That last point is a Codex Phase 3 finding (P2-a). The status used to
+        be read *ahead* of the lock, so a Close or Cancel committed in the gap
+        between the two reads would be invisible to the refusal and a
+        prohibited event would submit against a project that was, by the time
+        it landed, closed.
+
+        The sums that follow are themselves locking reads, because InnoDB's
+        REPEATABLE READ would otherwise serve a non-locking read from the
+        snapshot this transaction took before the lock was granted — i.e. it
+        would miss the concurrent expenditure the lock had just waited for.
+        That is the hole the Phase 2 re-audit found, and the same reasoning
+        applies to the status: a plain re-read after the lock would not be
+        enough, which is why the status comes out of the locking read itself
+        rather than from a second query.
+        """
+        project = frappe.db.get_value(
+            "CSR Project",
+            self.csr_project,
+            ["name", "sanctioned_amount", "status"],
+            as_dict=True,
+            for_update=True,
+        )
+        if not project:
+            frappe.throw(
+                _("{0} is not a CSR project.").format(self.csr_project),
+                title=_("CSR Fund Event"),
+            )
+
+        self._check_project_state(project.status)
+
+        if self.reverses:
+            self._check_reversal_ceiling()
+
+        before = project_event_totals(self.csr_project, for_update=True)
+        after = self._apply_self(before)
+
+        warnings = cross_stage_warnings(flt(project.sanctioned_amount, 2), after)
+        self._resolve_warnings(warnings)
+
+    def _check_project_state(self, status: str) -> None:
+        """Refusals that are decisions already taken, not figures that
+        disagree — so neither is overridable.
+
+        ``status`` is passed in from the locked read rather than fetched here,
+        so this cannot be called with a pre-lock value by accident.
+        """
         if status == "Cancelled":
             frappe.throw(
                 _(
@@ -182,40 +267,6 @@ class CSRFundEvent(Document):
                 ).format(self.csr_project),
                 title=_("CSR Fund Event"),
             )
-
-    def _check_reversal_ceiling_and_warnings(self) -> None:
-        """Everything that depends on other rows, under one project lock.
-
-        The order below is load-bearing. The ``for_update=True`` read of the
-        project row comes *first*: it is the lock every submitter on this
-        project contends for, and it is taken before anything is summed. The
-        sums that follow are themselves locking reads, because InnoDB's
-        REPEATABLE READ would otherwise serve a non-locking read from the
-        snapshot this transaction took before the lock was granted — i.e. it
-        would miss the concurrent expenditure the lock had just waited for.
-        This is precisely the hole the Phase 2 re-audit found.
-        """
-        project = frappe.db.get_value(
-            "CSR Project",
-            self.csr_project,
-            ["name", "sanctioned_amount", "status"],
-            as_dict=True,
-            for_update=True,
-        )
-        if not project:
-            frappe.throw(
-                _("{0} is not a CSR project.").format(self.csr_project),
-                title=_("CSR Fund Event"),
-            )
-
-        if self.reverses:
-            self._check_reversal_ceiling()
-
-        before = project_event_totals(self.csr_project, for_update=True)
-        after = self._apply_self(before)
-
-        warnings = cross_stage_warnings(flt(project.sanctioned_amount, 2), after)
-        self._resolve_warnings(warnings)
 
     def _check_reversal_ceiling(self) -> None:
         original_amount = flt(

@@ -351,17 +351,75 @@ refuses a stage other than `Sanctioned`, refuses a missing sanction figure,
 creates the `CSR Project`, and stamps `converted_to`. `Declined` requires a
 `decline_reason`.
 
+#### Codex audit of Phase 3
+
+Six findings: two P1s, both **disproven** against this container's actual
+frappe v16 source and then probed live; four valid, all fixed.
+
+- **P1-a — claimed: submitted events are deletable via `frappe.delete_doc`,
+  because the doctype JSON grants delete, bypassing the cancel refusal.**
+  **False.** `apps/frappe/frappe/model/delete_doc.py:289-297` refuses any
+  submittable doctype whose `docstatus.is_submitted()` — *"Submitted Record
+  cannot be deleted. You must Cancel it first"*, with `raise_exception=True`
+  — and the check sits ahead of the `on_trash` hook. Because
+  `before_cancel`/`on_cancel` throw, cancellation is impossible, so deletion
+  of a submitted event is **transitively** impossible. Probed live: deleting
+  a submitted event is refused and the event still counts; a **draft**
+  deletes normally, which is correct, since a draft counts for nothing.
+  Regardless of the verdict, `on_trash` now throws when `docstatus == 1` —
+  one `if`, defence in depth, so the invariant lives in this app's code and
+  not only in core's.
+- **P1-b — claimed: `frappe.client.set_value` / `frappe.db.set_value` can
+  mutate a submitted row's amount, kind or project.** **False for
+  `frappe.client.set_value`**, which is the REST-whitelisted one:
+  `client.py:207-215` ends in `doc.save()`; `document.py:597-598` routes a
+  submitted save through `validate_update_after_submit()`; and
+  `base_document.py:1270-1305` throws `frappe.UpdateAfterSubmitError` for any
+  field changed without `allow_on_submit`. No field on `CSR Fund Event` has
+  `allow_on_submit`. Probed live on amount, kind and `csr_project` — all
+  three refused, the stored row untouched, with the same endpoint editing a
+  **draft** freely as the positive control.
+
+  **`frappe.db.set_value` genuinely does bypass all of it** — it is a raw
+  `UPDATE` that runs no controller. It is **not** REST-whitelisted and is
+  reachable only from server-side code or a bench console. No app-level guard
+  can prevent it; this is the same class of residual as *"whoever holds the
+  MariaDB root password can edit the table"*, and it is asserted in the suite
+  so the residual stays visible rather than being assumed away. This app
+  calls `frappe.db.set_value` nowhere in the CSR module.
+- **P2-a — valid, fixed.** The project's status was read *before* the project
+  lock and never re-read, so a Close or Cancel committed in the gap was
+  invisible and a prohibited event could submit against a project that was
+  closed by the time it landed. The status and the sanction figure now come
+  out of the one locking `get_value` and are passed into the refusal, which
+  no longer queries at all — a plain re-read after the lock would not have
+  been enough, for the same REPEATABLE READ reason as P2-2 in Phase 2.
+- **P2-b — valid, fixed.** The report listed projects with `frappe.get_all`,
+  which sets `ignore_permissions` and skips permission query conditions and
+  User Permissions alike. It now uses `frappe.get_list`. The child-table and
+  event queries stay `get_all` deliberately: they are keyed to the project
+  names `get_list` already permitted.
+- **P3-a — valid, fixed.** Amounts with more than two decimal places were
+  accepted, so `0.004` was a real submitted event that every total displayed
+  as ₹0.00 — the ledger and the page disagreeing, with the page being the one
+  anybody reads. `validate()` now refuses `amount != flt(amount, 2)`.
+- **P3-b — valid, fixed.** Tranches sharing an `expected_on` allocated in
+  arrival order, so which one carried the shortfall could change between two
+  reads of unchanged data. The child `idx` is now the secondary sort key in
+  both `tranche_states` and the report query, so ties resolve in document
+  order.
+
 #### Tests
 
 ```bash
 bench --site frontend execute hospital_ops.hospital_ops.tests_runner.run_phase3_tests
 ```
 
-**85 passed, 0 failed** on the live site, every negative carrying its
-positive control in the same block, everything rolled back at the end
-whatever happens. `run_phase2_tests` still reports 32 passed / 0 failed, and
-`bench run-tests --app hospital_ops --doctype "Quick Capture"` still passes 5
-of 5.
+**111 passed, 0 failed** on the live site (85 for the build, 26 more for the
+audit findings), every negative carrying its positive control in the same
+block, everything rolled back at the end whatever happens. `run_phase2_tests`
+still reports 32 passed / 0 failed, and `bench run-tests --app hospital_ops
+--doctype "Quick Capture"` still passes 5 of 5.
 
 ### Contributing
 

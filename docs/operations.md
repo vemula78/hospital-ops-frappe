@@ -43,7 +43,7 @@ sudo docker exec -u frappe -w /home/frappe/frappe-bench frappe_docker-backend-1 
 
 32 invariant checks, all data rolled back regardless of outcome.
 
-Phase 3 (CSR) has its own suite, 85 checks, same rollback-always shape:
+Phase 3 (CSR) has its own suite, 111 checks, same rollback-always shape:
 
 ```bash
 sudo docker exec -u frappe -w /home/frappe/frappe-bench frappe_docker-backend-1 \

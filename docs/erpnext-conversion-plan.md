@@ -228,7 +228,18 @@ lock-order checks rather than by driving two overlapping transactions, because
 a `bench execute` is one request per process. That is the same limitation
 Phase 2 recorded, not a new one.
 
-**Verification.** `run_phase3_tests` 85 passed / 0 failed;
+**Audited.** Codex reviewed the phase: two P1 claims (submitted rows
+deletable; `frappe.client.set_value` mutating submitted rows) were disproven
+against the container's frappe v16 source and probed live — see the README for
+the file:line evidence. Four findings were valid and are fixed: the project
+status is now decided on the locked read rather than a pre-lock one; the
+report lists projects with `get_list` so permission query conditions apply;
+amounts with more than two decimal places are refused; and tranches sharing a
+date allocate by child `idx` rather than arrival order. The one residual
+recorded honestly is `frappe.db.set_value`, a raw `UPDATE` reachable only from
+server-side code or a console, which no app-level guard can prevent.
+
+**Verification.** `run_phase3_tests` 111 passed / 0 failed;
 `run_phase2_tests` 32 passed / 0 failed (no regression);
 `bench run-tests --app hospital_ops --doctype "Quick Capture"` 5 of 5.
 All CSR record counts back to zero after the runs.

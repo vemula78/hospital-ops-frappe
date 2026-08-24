@@ -156,9 +156,16 @@ def tranche_states(tranches, received: float, as_of: str | None = None) -> list[
     re-tagging anything. ``overdue`` is computed here and stored nowhere: a
     stored flag is wrong the moment a backdated receipt is entered, and then
     nobody knows which of the two to believe.
+
+    The child ``idx`` is the secondary sort key (Codex Phase 3 finding P3-b).
+    Two tranches expected on the same date are common — a split release — and
+    with date alone the allocation order came from whatever order the rows
+    arrived in, so which of the two carried the shortfall could change between
+    two reads of unchanged data. Ties now resolve in the order the tranches
+    appear on the document, which is the order a person put them in.
     """
     as_of_date = getdate(as_of or today())
-    ordered = sorted(tranches, key=lambda row: getdate(row.expected_on))
+    ordered = sorted(tranches, key=lambda row: (getdate(row.expected_on), row.idx or 0))
 
     states = []
     cumulative_expected = 0.0

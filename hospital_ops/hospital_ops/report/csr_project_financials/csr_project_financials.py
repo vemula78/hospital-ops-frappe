@@ -87,7 +87,15 @@ def get_data(filters) -> list[dict]:
     if filters.get("status"):
         project_filters["status"] = filters.get("status")
 
-    projects = frappe.get_all(
+    # get_list, not get_all — load-bearing (Codex Phase 3 finding P2-b).
+    # frappe.get_all sets ignore_permissions and skips both the doctype's
+    # permission query conditions and any User Permission restrictions, so a
+    # user who could not open a single CSR Project would still read every
+    # project's sanction, receipts and spend off this report. get_list applies
+    # them. The queries below stay get_all deliberately: they are keyed to the
+    # project names get_list already permitted, so re-checking would cost a
+    # permission pass per row and permit nothing extra.
+    projects = frappe.get_list(
         "CSR Project",
         filters=project_filters,
         fields=["name", "project_title", "funder", "status", "sanctioned_amount"],
@@ -128,8 +136,10 @@ def _tranches_by_project(names: list[str]) -> dict[str, list]:
     rows = frappe.get_all(
         "CSR Tranche",
         filters={"parenttype": "CSR Project", "parent": ["in", names]},
-        fields=["name", "parent", "expected_on", "expected_amount"],
-        order_by="parent asc, expected_on asc",
+        fields=["name", "parent", "idx", "expected_on", "expected_amount"],
+        # idx as the tie-break, matching tranche_states: two tranches expected
+        # on the same date must allocate in document order, not arrival order.
+        order_by="parent asc, expected_on asc, idx asc",
     )
     grouped: dict[str, list] = {}
     for row in rows:
