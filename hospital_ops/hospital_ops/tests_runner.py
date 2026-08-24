@@ -60,6 +60,18 @@ from hospital_ops.hospital_ops.report.csr_project_financials.csr_project_financi
     execute as report_execute,
     get_data as report_get_data,
 )
+from hospital_ops.hospital_ops.data_boundary import find_participant_identifier_fields
+from hospital_ops.hospital_ops.doctype.research_study.research_study import (
+    complete_milestone,
+    get_study_standing,
+)
+from hospital_ops.hospital_ops.doctype.research_ethics_submission.research_ethics_submission import (
+    record_decision,
+)
+from hospital_ops.hospital_ops.report.research_ethics_register.research_ethics_register import (
+    execute as research_report_execute,
+)
+from hospital_ops.hospital_ops.research_ethics import ethics_standing
 
 _PASS = []
 _FAIL = []
@@ -1438,3 +1450,340 @@ def _csr_audit_p3_precision_and_tie_checks() -> None:
         "p3-b: the report counts the same single overdue tranche",
         row["overdue_tranches"] == 1,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Research
+# ---------------------------------------------------------------------------
+#
+# Same shape as Phases 2 and 3: plain assertions, every negative carrying a
+# positive control, everything rolled back at the end. §4.3 holds throughout
+# — no participant identifier appears in any fixture here, and
+# ``_research_participant_identifier_guard_check`` makes that a test rather
+# than a hope.
+
+
+def run_phase4_tests() -> None:
+    _PASS.clear()
+    _FAIL.clear()
+    try:
+        _research_milestone_checks()
+        _research_ethics_decision_checks()
+        _research_ethics_state_machine_checks()
+        _research_ethics_standing_checks()
+        _research_report_parity_checks()
+        _research_participant_identifier_guard_check()
+    finally:
+        frappe.db.rollback()
+
+    print(f"\n{len(_PASS)} passed, {len(_FAIL)} failed")
+    if _FAIL:
+        frappe.throw(f"Failures: {_FAIL}")
+
+
+def _study(title: str, status: str = "Active", milestones=None) -> str:
+    return (
+        frappe.get_doc(
+            {
+                "doctype": "Research Study",
+                "study_title": title,
+                "principal_investigator": "Dr. Synthetic Investigator",
+                "department": "Cardiology",
+                "status": status,
+                "commenced_on": today(),
+                "milestones": milestones or [],
+            }
+        )
+        .insert()
+        .name
+    )
+
+
+def _submission(study: str, committee: str = "IEC", submitted_on=None) -> str:
+    return (
+        frappe.get_doc(
+            {
+                "doctype": "Research Ethics Submission",
+                "study": study,
+                "committee": committee,
+                "submitted_on": submitted_on or today(),
+            }
+        )
+        .insert()
+        .name
+    )
+
+
+def _research_milestone_checks() -> None:
+    study = _study(
+        "Milestone checks",
+        milestones=[{"description": "Submit protocol to IEC", "due_on": add_days(today(), 7)}],
+    )
+    doc = frappe.get_doc("Research Study", study)
+    row_name = doc.milestones[0].name
+
+    _expect_throws(
+        "milestone: an unknown row name is refused",
+        lambda: complete_milestone(study, "not-a-real-row"),
+    )
+
+    result = complete_milestone(study, row_name)
+    doc.reload()
+    _check(
+        "milestone: complete_milestone stamps today's date (positive control)",
+        doc.milestones[0].completed_on == today() and result["completed_on"] == str(today()),
+    )
+
+    message = _throws_message(
+        "milestone: completing an already-completed milestone is refused",
+        lambda: complete_milestone(study, row_name),
+    )
+    _check(
+        "milestone: the refusal names the date it was completed on",
+        str(today()) in message,
+    )
+
+    terminated = _study(
+        "Terminated study milestone checks",
+        status="Terminated",
+        milestones=[{"description": "Never gets here", "due_on": today()}],
+    )
+    terminated_doc = frappe.get_doc("Research Study", terminated)
+    _expect_throws(
+        "milestone: completion on a Terminated study is refused",
+        lambda: complete_milestone(terminated, terminated_doc.milestones[0].name),
+    )
+
+    completed_status = _study(
+        "Completed study milestone checks",
+        status="Completed",
+        milestones=[{"description": "Also never gets here", "due_on": today()}],
+    )
+    completed_doc = frappe.get_doc("Research Study", completed_status)
+    _expect_throws(
+        "milestone: completion on a Completed study is refused",
+        lambda: complete_milestone(completed_status, completed_doc.milestones[0].name),
+    )
+
+    active = _study(
+        "Active study milestone checks",
+        status="Active",
+        milestones=[{"description": "Completes fine", "due_on": today()}],
+    )
+    active_doc = frappe.get_doc("Research Study", active)
+    complete_milestone(active, active_doc.milestones[0].name)
+    active_doc.reload()
+    _check(
+        "milestone: completion on an Active study is accepted (positive control)",
+        active_doc.milestones[0].completed_on == today(),
+    )
+
+
+def _research_ethics_decision_checks() -> None:
+    study = _study("Ethics decision checks")
+    submission = _submission(study)
+
+    _expect_throws(
+        "ethics: Approved with no valid_until is refused",
+        lambda: record_decision(submission, "Approved"),
+    )
+    _check(
+        "ethics: and nothing was written — still Pending",
+        frappe.db.get_value("Research Ethics Submission", submission, "decision") == "Pending",
+    )
+
+    result = record_decision(submission, "Approved", valid_until=add_days(today(), 365))
+    _check(
+        "ethics: Approved with valid_until is accepted (positive control)",
+        result["decision"] == "Approved" and result["valid_until"] == str(add_days(today(), 365)),
+    )
+
+    message = _throws_message(
+        "ethics: a second decision on the same submission is refused",
+        lambda: record_decision(submission, "Rejected", decision_note="Too late"),
+    )
+    _check(
+        "ethics: the refusal names the first decision and its date",
+        "Approved" in message and str(today()) in message,
+    )
+
+    rejected_submission = _submission(study, committee="Second IEC")
+    _expect_throws(
+        "ethics: Rejected with no decision_note is refused",
+        lambda: record_decision(rejected_submission, "Rejected"),
+    )
+    rejected_result = record_decision(
+        rejected_submission, "Rejected", decision_note="Insufficient community engagement plan."
+    )
+    _check(
+        "ethics: Rejected with a decision_note is accepted (positive control)",
+        rejected_result["decision"] == "Rejected",
+    )
+
+
+def _research_ethics_state_machine_checks() -> None:
+    """Codex-style lesson from Phase 2 (P3-2): read_only in the JSON is a UI
+    hint only. A direct save must not move decision/decided_on/valid_until,
+    and a document must not be insertable already decided."""
+    study = _study("Ethics state machine checks")
+
+    _expect_throws(
+        "ethics: inserting a submission already Approved is refused",
+        lambda: frappe.get_doc(
+            {
+                "doctype": "Research Ethics Submission",
+                "study": study,
+                "committee": "IEC",
+                "submitted_on": today(),
+                "decision": "Approved",
+                "decided_on": today(),
+                "valid_until": add_days(today(), 365),
+            }
+        ).insert(),
+    )
+
+    submission = _submission(study)
+    doc = frappe.get_doc("Research Ethics Submission", submission)
+    doc.decision = "Approved"
+    doc.decided_on = today()
+    doc.valid_until = add_days(today(), 365)
+    _expect_throws(
+        "ethics: a direct save flipping Pending -> Approved is refused (state machine)",
+        doc.save,
+    )
+
+    doc.reload()
+    result = record_decision(submission, "Approved", valid_until=add_days(today(), 365))
+    _check(
+        "ethics: the whitelisted record_decision path still works end-to-end "
+        "(positive control)",
+        result["decision"] == "Approved"
+        and frappe.db.get_value("Research Ethics Submission", submission, "decision")
+        == "Approved",
+    )
+
+    doc.reload()
+    doc.decision_reference = "Forged reference"
+    _expect_throws(
+        "ethics: a direct save changing decision_reference after the decision is refused",
+        doc.save,
+    )
+
+
+def _research_ethics_standing_checks() -> None:
+    """none -> pending -> approved -> expired, and the renewal path."""
+    study = _study("Ethics standing lifecycle")
+
+    _check(
+        "standing: a fresh study with no submissions reads none",
+        ethics_standing(study)["status"] == "none",
+    )
+
+    submission = _submission(study)
+    _check(
+        "standing: a Pending submission reads pending",
+        ethics_standing(study)["status"] == "pending"
+        and ethics_standing(study)["submission"] == submission,
+    )
+
+    record_decision(submission, "Approved", valid_until=add_days(today(), 30))
+    approved_standing = ethics_standing(study)
+    _check(
+        "standing: an Approved decision with a future valid_until reads approved",
+        approved_standing["status"] == "approved"
+        and approved_standing["submission"] == submission,
+    )
+
+    expired_as_of = add_days(today(), 31)
+    expired_standing = ethics_standing(study, as_of=expired_as_of)
+    _check(
+        "standing: as_of after valid_until reads expired",
+        expired_standing["status"] == "expired"
+        and expired_standing["submission"] == submission,
+    )
+    _check(
+        "standing: and reading as_of today still reads approved (derived, not stored)",
+        ethics_standing(study)["status"] == "approved",
+    )
+
+    renewal = _submission(study, committee="IEC", submitted_on=expired_as_of)
+    _check(
+        "standing: a fresh Pending renewal on an expired study reads pending, not "
+        "expired (the renewal path)",
+        ethics_standing(study, as_of=expired_as_of)["status"] == "pending"
+        and ethics_standing(study, as_of=expired_as_of)["submission"] == renewal,
+    )
+
+    get_study_standing_result = get_study_standing(study)
+    _check(
+        "standing: the whitelisted get_study_standing agrees with ethics_standing directly",
+        get_study_standing_result["status"] == ethics_standing(study)["status"],
+    )
+
+
+def _research_report_parity_checks() -> None:
+    """The report and ethics_standing must agree, because they share the one
+    function — a second implementation is exactly how the two would drift."""
+    approved_study = _study("Report parity — approved")
+    approved_submission = _submission(approved_study)
+    record_decision(approved_submission, "Approved", valid_until=add_days(today(), 60))
+
+    pending_study = _study("Report parity — pending")
+    _submission(pending_study)
+
+    none_study = _study("Report parity — none")
+
+    rejected_study = _study("Report parity — rejected")
+    rejected_submission = _submission(rejected_study)
+    record_decision(rejected_submission, "Rejected", decision_note="Not viable.")
+
+    _columns, rows = research_report_execute({})
+    by_name = {row["study"]: row for row in rows}
+
+    for study, expected_status in (
+        (approved_study, "approved"),
+        (pending_study, "pending"),
+        (none_study, "none"),
+        (rejected_study, "none"),
+    ):
+        standing = ethics_standing(study)
+        _check(
+            f"report: {expected_status} study's report row agrees with ethics_standing",
+            by_name[study]["standing"] == standing["status"] == expected_status
+            and by_name[study]["latest_submission"] == standing.get("submission"),
+        )
+
+    approved_row = by_name[approved_study]
+    _check(
+        "report: days_to_expiry is computed and positive for the approved study",
+        approved_row["days_to_expiry"] == 60,
+    )
+
+
+def _research_participant_identifier_guard_check() -> None:
+    """§4.3, as a test rather than a hope: no field on any Hospital Ops
+    doctype may look like a research-participant identifier, patient field,
+    diagnosis, consent flag or enrolment marker — including one bolted on
+    later as a Custom Field.
+
+    The positive control proves the scan mechanism itself works: run
+    unfiltered (no module restriction) on a site where the `healthcare` app
+    is installed, and it must find Patient-shaped fields. A scan that always
+    returns empty would make the Hospital Ops assertion below meaningless.
+    """
+    unfiltered_matches = find_participant_identifier_fields()
+    _check(
+        "data boundary: the unfiltered scan finds participant-shaped fields "
+        "elsewhere on this site (positive control — proves the scan works)",
+        len(unfiltered_matches) > 0
+        and any(m["doctype"] == "Patient" for m in unfiltered_matches),
+    )
+
+    hospital_ops_matches = find_participant_identifier_fields(module="Hospital Ops")
+    _check(
+        "data boundary: zero participant-identifier-shaped fields anywhere in the "
+        "Hospital Ops module (§4.3)",
+        len(hospital_ops_matches) == 0,
+    )
+    if hospital_ops_matches:
+        print("data boundary violations:", hospital_ops_matches)

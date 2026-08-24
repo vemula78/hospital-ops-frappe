@@ -1,0 +1,100 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:RSTU-{#####}",
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "study_title",
+  "principal_investigator",
+  "department",
+  "status",
+  "commenced_on",
+  "section_milestones",
+  "milestones",
+  "notes"
+ ],
+ "fields": [
+  {
+   "fieldname": "study_title",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Study Title",
+   "reqd": 1
+  },
+  {
+   "description": "Free text — deliberately not a Link to any person/patient record (data boundary, plan §4.3).",
+   "fieldname": "principal_investigator",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Principal Investigator"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Department"
+  },
+  {
+   "default": "Planned",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Planned\nActive\nCompleted\nTerminated",
+   "reqd": 1
+  },
+  {
+   "fieldname": "commenced_on",
+   "fieldtype": "Date",
+   "label": "Commenced On"
+  },
+  {
+   "fieldname": "section_milestones",
+   "fieldtype": "Section Break",
+   "label": "Milestones"
+  },
+  {
+   "fieldname": "milestones",
+   "fieldtype": "Table",
+   "label": "Milestones",
+   "options": "Research Study Milestone"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Text",
+   "label": "Notes"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Hospital Ops",
+ "name": "Research Study",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "study_title",
+ "track_changes": 1
+}

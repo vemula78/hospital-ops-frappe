@@ -1,0 +1,49 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "description",
+  "due_on",
+  "completed_on"
+ ],
+ "fields": [
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Description",
+   "reqd": 1
+  },
+  {
+   "fieldname": "due_on",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Due On"
+  },
+  {
+   "description": "Set only by complete_milestone() — not editable here.",
+   "fieldname": "completed_on",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Completed On",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Hospital Ops",
+ "name": "Research Study Milestone",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "creation",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}
