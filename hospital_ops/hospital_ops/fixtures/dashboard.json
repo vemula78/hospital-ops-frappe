@@ -1,0 +1,33 @@
+[
+ {
+  "cards": [
+   {
+    "card": "Open Quick Captures"
+   },
+   {
+    "card": "Waiting For (Status Waiting)"
+   },
+   {
+    "card": "Draft CSR Fund Events"
+   },
+   {
+    "card": "Active Research Studies"
+   }
+  ],
+  "chart_options": null,
+  "charts": [
+   {
+    "chart": "Quick Captures Opened",
+    "width": "Half"
+   }
+  ],
+  "dashboard_name": "Hospital Ops",
+  "docstatus": 0,
+  "doctype": "Dashboard",
+  "is_default": 0,
+  "is_standard": 0,
+  "modified": "2026-08-24 12:16:35.581698",
+  "module": "Hospital Ops",
+  "name": "Hospital Ops"
+ }
+]
