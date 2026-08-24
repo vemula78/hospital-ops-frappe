@@ -1,0 +1,113 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:SUAT-{#####}",
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "software_project",
+  "requirement",
+  "requirement_description",
+  "column_break_head",
+  "tested_on",
+  "result",
+  "tester_name",
+  "section_note",
+  "note"
+ ],
+ "fields": [
+  {
+   "fieldname": "software_project",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Software Project",
+   "options": "Software Project Record",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "description": "The row name of the Software Requirement Item this result tests. Frappe has no nested child tables and no Link to a child row, so the reference's requirement_id becomes a validated row reference.",
+   "fieldname": "requirement",
+   "fieldtype": "Data",
+   "label": "Requirement",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "requirement_description",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Requirement Description",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Only a result tested after the requirement was agreed counts towards a release — a pass against the requirement as it stood before it was agreed tested something else.",
+   "fieldname": "tested_on",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Tested On",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "result",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Result",
+   "options": "Passed\nFailed",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "tester_name",
+   "fieldtype": "Data",
+   "label": "Tester Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_note",
+   "fieldtype": "Section Break"
+  },
+  {
+   "description": "Required on Failed: a failure with no detail cannot be acted on, and it is the result most likely to be entered in a hurry.",
+   "fieldname": "note",
+   "fieldtype": "Small Text",
+   "label": "Note",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Hospital Ops",
+ "name": "Software UAT Result",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "tested_on",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -1,0 +1,94 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:SOFT-{#####}",
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "project_title",
+  "owner_name",
+  "column_break_head",
+  "status",
+  "released_on",
+  "section_requirements",
+  "requirements"
+ ],
+ "fields": [
+  {
+   "fieldname": "project_title",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Project Title",
+   "reqd": 1
+  },
+  {
+   "fieldname": "owner_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Owner Name"
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Active",
+   "description": "Released is set only by record_release(), which refuses unless every requirement has a passing UAT result newer than the day it was agreed. Released is terminal — a release that can be un-released is not a release.",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Active\nReleased\nAbandoned",
+   "reqd": 1
+  },
+  {
+   "description": "Stamped by record_release(). Not editable here.",
+   "fieldname": "released_on",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Released On",
+   "read_only": 1
+  },
+  {
+   "description": "Added only by add_requirement(), under a lock on the project: adding one changes release readiness, so it has to serialise against a release in flight.",
+   "fieldname": "section_requirements",
+   "fieldtype": "Section Break",
+   "label": "Requirements"
+  },
+  {
+   "fieldname": "requirements",
+   "fieldtype": "Table",
+   "label": "Requirements",
+   "options": "Software Requirement Item"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Hospital Ops",
+ "name": "Software Project Record",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "project_title",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}
