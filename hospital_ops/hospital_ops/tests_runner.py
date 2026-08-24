@@ -96,6 +96,9 @@ from hospital_ops.hospital_ops.doctype.software_project_record.software_project_
 from hospital_ops.hospital_ops.report.build_and_publish_status.build_and_publish_status import (
     execute as build_publish_report_execute,
 )
+from hospital_ops.hospital_ops.report.weekly_review.weekly_review import (
+    execute as weekly_review_execute,
+)
 
 _PASS = []
 _FAIL = []
@@ -2997,3 +3000,587 @@ def _build_publish_report_parity_checks() -> None:
         all(row["record"].startswith("SIGN-") for row in signage_rows)
         and any(row["record"] == sign for row in signage_rows),
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — Weekly Review, dashboard/notification fixtures, over-receipt hook
+# ---------------------------------------------------------------------------
+#
+# Same shape as every prior phase: plain assertions, every negative carrying
+# a positive/negative control in the same block, everything rolled back at
+# the end. The Weekly Review checks seed one item per section and assert
+# both that it appears tagged with the right section AND that a resolved /
+# processed / published counterpart does not — the report must be unable to
+# disagree with the module it reports on. Run alongside run_phase2_tests
+# through run_phase5_tests for full regression (see docs/operations.md).
+
+
+def run_phase6_tests() -> None:
+    _PASS.clear()
+    _FAIL.clear()
+    try:
+        _weekly_review_quick_capture_checks()
+        _weekly_review_waiting_for_checks()
+        _weekly_review_csr_obligation_checks()
+        _weekly_review_csr_tranche_checks()
+        _weekly_review_ethics_checks()
+        _weekly_review_hospital_sign_checks()
+        _weekly_review_web_page_checks()
+        _weekly_review_software_checks()
+        _over_receipt_guard_checks()
+        _dashboard_fixture_checks()
+        _notification_fixture_checks()
+    finally:
+        frappe.db.rollback()
+
+    print(f"\n{len(_PASS)} passed, {len(_FAIL)} failed")
+    if _FAIL:
+        frappe.throw(f"Failures: {_FAIL}")
+
+
+# -- Weekly Review: one seed per section, plus its negative control ---------
+
+
+def _weekly_review_quick_capture_checks() -> None:
+    open_capture = frappe.get_doc(
+        {"doctype": "Quick Capture", "capture_text": "Phase 6 weekly review — open capture"}
+    ).insert()
+    processed_capture = frappe.get_doc(
+        {"doctype": "Quick Capture", "capture_text": "Phase 6 weekly review — processed capture"}
+    ).insert()
+    process_into_todo(processed_capture.name)
+
+    _columns, rows = weekly_review_execute({"section": "Quick Captures"})
+    records = {row["record"] for row in rows}
+    _check(
+        "weekly review: an Open Quick Capture appears in the Quick Captures section",
+        open_capture.name in records,
+    )
+    _check(
+        "weekly review: a Processed capture (negative control) does not appear",
+        processed_capture.name not in records,
+    )
+    _check(
+        "weekly review: every row in this section is tagged Quick Captures",
+        rows and all(row["section"] == "Quick Captures" for row in rows),
+    )
+
+
+def _weekly_review_waiting_for_checks() -> None:
+    contact = frappe.get_doc(
+        {"doctype": "Contact", "first_name": "Phase 6 Weekly Review Contact"}
+    ).insert()
+
+    due = frappe.get_doc(
+        {
+            "doctype": "Waiting For",
+            "waiting_on": contact.name,
+            "subject": "Phase 6 weekly review — due a follow-up",
+            "delegated_on": add_days(today(), -10),
+            "promised_on": add_days(today(), -1),
+        }
+    ).insert()
+    resolved = frappe.get_doc(
+        {
+            "doctype": "Waiting For",
+            "waiting_on": contact.name,
+            "subject": "Phase 6 weekly review — resolved",
+            "delegated_on": add_days(today(), -10),
+            "promised_on": add_days(today(), -1),
+        }
+    ).insert()
+    resolved.status = "Resolved"
+    resolved.save()
+    not_due = frappe.get_doc(
+        {
+            "doctype": "Waiting For",
+            "waiting_on": contact.name,
+            "subject": "Phase 6 weekly review — not due yet",
+            "delegated_on": today(),
+            "promised_on": add_days(today(), 5),
+        }
+    ).insert()
+
+    _columns, rows = weekly_review_execute({"section": "Waiting For"})
+    records = {row["record"] for row in rows}
+    _check(
+        "weekly review: a Waiting item whose follow_up_on has arrived appears",
+        due.name in records,
+    )
+    _check(
+        "weekly review: a Resolved item (negative control) does not appear, even though "
+        "follow_up_on has passed",
+        resolved.name not in records,
+    )
+    _check(
+        "weekly review: a Waiting item not yet due (negative control) does not appear",
+        not_due.name not in records,
+    )
+
+
+def _weekly_review_csr_obligation_checks() -> None:
+    project = _project("Weekly review — CSR obligation checks", 100_000)
+
+    overdue = frappe.get_doc(
+        {
+            "doctype": "CSR Reporting Obligation",
+            "csr_project": project,
+            "description": "Phase 6 weekly review — overdue obligation",
+            "due_on": add_days(today(), -5),
+        }
+    ).insert()
+    submitted = frappe.get_doc(
+        {
+            "doctype": "CSR Reporting Obligation",
+            "csr_project": project,
+            "description": "Phase 6 weekly review — submitted obligation",
+            "due_on": add_days(today(), -5),
+            "submitted_on": add_days(today(), -6),
+        }
+    ).insert()
+
+    _columns, rows = weekly_review_execute({"section": "CSR Reporting Obligations"})
+    records = {row["record"] for row in rows}
+    _check(
+        "weekly review: an overdue CSR Reporting Obligation appears",
+        overdue.name in records,
+    )
+    _check(
+        "weekly review: a submitted obligation (negative control) does not appear, even "
+        "though due_on has passed",
+        submitted.name not in records,
+    )
+
+    # Parity: the report must agree with the module's own helper for the same record.
+    _check(
+        "weekly review: get_obligation_state agrees the overdue obligation is overdue "
+        "(parity between the report and the module)",
+        get_obligation_state(overdue.name)["overdue"] is True,
+    )
+    _check(
+        "weekly review: get_obligation_state agrees the submitted obligation is not "
+        "overdue (parity, negative side)",
+        get_obligation_state(submitted.name)["overdue"] is False,
+    )
+
+
+def _weekly_review_csr_tranche_checks() -> None:
+    project = _project(
+        "Weekly review — CSR tranche checks",
+        1_000_000,
+        tranches=[
+            {"expected_on": add_days(today(), -20), "expected_amount": 200_000},
+            {"expected_on": add_days(today(), 20), "expected_amount": 300_000},
+        ],
+    )
+    _columns, rows = weekly_review_execute({"section": "CSR Tranches"})
+    matching = [row for row in rows if project in row["title"]]
+    _check(
+        "weekly review: exactly the one past-due, unreceived tranche appears for this "
+        "project (the future tranche does not)",
+        len(matching) == 1,
+    )
+
+    fully_paid_project = _project(
+        "Weekly review — CSR tranche fully paid",
+        200_000,
+        tranches=[{"expected_on": add_days(today(), -20), "expected_amount": 200_000}],
+    )
+    _submitted(fully_paid_project, "Receipt", 200_000)
+    _columns2, rows2 = weekly_review_execute({"section": "CSR Tranches"})
+    _check(
+        "weekly review: a fully-received tranche (negative control) does not appear",
+        not any(fully_paid_project in row["title"] for row in rows2),
+    )
+
+
+def _weekly_review_ethics_checks() -> None:
+    expiring_study = _study("Weekly review — ethics expiring soon")
+    record_decision(_submission(expiring_study), "Approved", valid_until=add_days(today(), 30))
+
+    safe_study = _study("Weekly review — ethics not yet due")
+    record_decision(_submission(safe_study), "Approved", valid_until=add_days(today(), 200))
+
+    expired_study = _study("Weekly review — ethics expired")
+    record_decision(_submission(expired_study), "Approved", valid_until=add_days(today(), -1))
+
+    _columns, rows = weekly_review_execute({"section": "Research Ethics"})
+    titles = {row["title"] for row in rows}
+
+    exp_title = frappe.db.get_value("Research Study", expiring_study, "study_title")
+    safe_title = frappe.db.get_value("Research Study", safe_study, "study_title")
+    expired_title = frappe.db.get_value("Research Study", expired_study, "study_title")
+
+    _check(
+        "weekly review: a study whose ethics approval expires within 60 days appears",
+        exp_title in titles,
+    )
+    _check(
+        "weekly review: a study not due to expire for 200 days (negative control) does "
+        "not appear",
+        safe_title not in titles,
+    )
+    _check(
+        "weekly review: an already-expired ethics approval appears",
+        expired_title in titles,
+    )
+
+
+def _weekly_review_hospital_sign_checks() -> None:
+    due_sign = _sign("P6-SIGN-DUE", next_inspection_on=add_days(today(), -3))
+    _columns, rows = weekly_review_execute({"section": "Hospital Signs"})
+    records = {row["record"] for row in rows}
+    _check(
+        "weekly review: a sign whose next_inspection_on is in the past appears",
+        due_sign in records,
+    )
+
+    clear_sign = _sign("P6-SIGN-CLEAR", next_inspection_on=add_days(today(), 90))
+    design = add_design(clear_sign)["design"]
+    _pass_chain(clear_sign, design)
+    _sign_event(clear_sign, design, "Production", occurred_on=add_days(today(), 3))
+    _sign_event(clear_sign, design, "Installation", occurred_on=add_days(today(), 4))
+    _columns2, rows2 = weekly_review_execute({"section": "Hospital Signs"})
+    records2 = {row["record"] for row in rows2}
+    _check(
+        "weekly review: a fully installed sign with its inspection not yet due (negative "
+        "control) does not appear",
+        clear_sign not in records2,
+    )
+
+
+def _weekly_review_web_page_checks() -> None:
+    draft_only = _web_page("Phase 6 weekly review — draft only")
+    record_step(draft_only, "Draft", occurred_on=add_days(today(), -5))
+    _columns, rows = weekly_review_execute({"section": "Hospital Web Pages"})
+    records = {row["record"] for row in rows}
+    _check(
+        "weekly review: a page with only a Draft recorded appears (review and approval "
+        "still missing)",
+        draft_only in records,
+    )
+
+    complete_page = _web_page("Phase 6 weekly review — fully cleared")
+    record_step(complete_page, "Draft", occurred_on=add_days(today(), -5))
+    record_step(complete_page, "Review", occurred_on=add_days(today(), -4))
+    record_step(complete_page, "Approval", occurred_on=add_days(today(), -3))
+    _columns2, rows2 = weekly_review_execute({"section": "Hospital Web Pages"})
+    records2 = {row["record"] for row in rows2}
+    _check(
+        "weekly review: a page with draft, review and approval correctly ordered "
+        "(negative control) does not appear",
+        complete_page not in records2,
+    )
+
+
+def _weekly_review_software_checks() -> None:
+    gap_project = _software("Phase 6 weekly review software — gap")
+    add_requirement(gap_project, "Requirement never tested")
+    _columns, rows = weekly_review_execute({"section": "Software Project Records"})
+    records = {row["record"] for row in rows}
+    _check(
+        "weekly review: an Active project with an untested requirement appears",
+        gap_project in records,
+    )
+
+    covered_project = _software("Phase 6 weekly review software — covered")
+    req = add_requirement(covered_project, "Requirement that gets tested")
+    record_uat_result(covered_project, req["requirement"], "Passed", tested_on=add_days(today(), 1))
+    _columns2, rows2 = weekly_review_execute({"section": "Software Project Records"})
+    records2 = {row["record"] for row in rows2}
+    _check(
+        "weekly review: an Active project whose only requirement passed UAT (negative "
+        "control) does not appear",
+        covered_project not in records2,
+    )
+
+    abandoned_project = _software(
+        "Phase 6 weekly review software — abandoned with a gap", status="Abandoned"
+    )
+    add_requirement(abandoned_project, "Requirement nobody will ever test now")
+    _columns3, rows3 = weekly_review_execute({"section": "Software Project Records"})
+    records3 = {row["record"] for row in rows3}
+    _check(
+        "weekly review: a non-Active (Abandoned) project never appears here, even with an "
+        "untested requirement — this section is scoped to Active projects only",
+        abandoned_project not in records3,
+    )
+
+
+# -- Over-receipt hook: the Phase 1 gate condition ---------------------------
+
+
+_OVER_RECEIPT_MARKER = "[hospital_ops over-receipt guard]"
+
+
+def _p6_supplier() -> str:
+    supplier_group = (
+        frappe.db.get_value("Supplier Group", {"name": ["!=", "All Supplier Groups"]})
+        or "All Supplier Groups"
+    )
+    return (
+        frappe.get_doc(
+            {
+                "doctype": "Supplier",
+                "supplier_name": f"Phase 6 Test Supplier {frappe.generate_hash(length=8)}",
+                "supplier_group": supplier_group,
+            }
+        )
+        .insert()
+        .name
+    )
+
+
+def _p6_item(is_stock_item: int, allowance: float | None = None) -> str:
+    code = f"P6-{'STOCK' if is_stock_item else 'NONSTOCK'}-{frappe.generate_hash(length=10)}"
+    doc = {
+        "doctype": "Item",
+        "item_code": code,
+        "item_name": code,
+        "item_group": "Hospital Equipment & Consumables",
+        "stock_uom": "Nos",
+        "is_stock_item": is_stock_item,
+    }
+    if allowance is not None:
+        doc["over_delivery_receipt_allowance"] = allowance
+    return frappe.get_doc(doc).insert().name
+
+
+def _p6_po(item_code: str, qty: float, company: str, warehouse: str | None = None):
+    row = {"item_code": item_code, "qty": qty, "rate": 100, "schedule_date": today()}
+    if warehouse:
+        row["warehouse"] = warehouse
+    po = frappe.get_doc(
+        {
+            "doctype": "Purchase Order",
+            "company": company,
+            "supplier": _p6_supplier(),
+            "schedule_date": today(),
+            "items": [row],
+        }
+    )
+    po.insert()
+    po.submit()
+    return po
+
+
+def _p6_receipt(item_code: str, qty: float, po, po_item_name: str, company: str, warehouse=None):
+    row = {
+        "item_code": item_code,
+        "qty": qty,
+        "rate": 100,
+        "purchase_order": po.name,
+        "purchase_order_item": po_item_name,
+    }
+    if warehouse:
+        row["warehouse"] = warehouse
+    return frappe.get_doc(
+        {
+            "doctype": "Purchase Receipt",
+            "company": company,
+            "supplier": po.supplier,
+            "posting_date": today(),
+            "items": [row],
+        }
+    )
+
+
+def _over_receipt_guard_checks() -> None:
+    """The Phase 1 gate condition, closed by ``purchase_receipt_guard.py``.
+
+    Evidence this reproduces: erpnext-phase1-gate.md §3.1 — 4 received
+    against 2 ordered on a fixed-asset (non-stock) line, submitted without a
+    warning. Every scenario here is inside the rollback, using freshly
+    minted synthetic Items and Suppliers rather than the Phase 1 console
+    masters — SWO-DEFIB-001 et al. are real, but items and suppliers created
+    fresh in-test do not depend on that console session's state surviving
+    unmodified.
+    """
+    company = "SSSIHMS Whitefield Ops"
+    if not frappe.db.exists("Company", company):
+        _check(
+            "over-receipt guard: SSSIHMS Whitefield Ops company exists on this site "
+            "(Phase 1 gate master data) — required for the rest of this group",
+            False,
+        )
+        return
+
+    warehouse = frappe.db.get_value("Warehouse", {"company": company}, "name")
+
+    # 1. Within the ordered qty: accepted.
+    item = _p6_item(is_stock_item=0)
+    po = _p6_po(item, 5, company)
+    within = _p6_receipt(item, 5, po, po.items[0].name, company)
+    within.insert()
+    within.submit()
+    _check(
+        "over-receipt guard: a non-stock receipt within the ordered qty is accepted",
+        within.docstatus == 1,
+    )
+
+    # 2. Over-receipt: refused, naming the item, the ordered qty and what was received.
+    item2 = _p6_item(is_stock_item=0)
+    po2 = _p6_po(item2, 2, company)
+    over = _p6_receipt(item2, 3, po2, po2.items[0].name, company)
+    over.insert()
+    message = _throws_message(
+        "over-receipt guard: a non-stock over-receipt (3 against 2 ordered) is refused",
+        over.submit,
+    )
+    _check(
+        "over-receipt guard: the refusal names the item code",
+        item2 in message,
+    )
+    for figure in ("2.0", "3.0"):
+        _check(f"over-receipt guard: the refusal names the figure {figure}", figure in message)
+    _check(
+        "over-receipt guard: the refusal carries this app's marker (distinguishing it "
+        "from core's own guard)",
+        _OVER_RECEIPT_MARKER in message,
+    )
+    _check(
+        "over-receipt guard: nothing was written — the receipt is still a draft",
+        frappe.db.get_value("Purchase Receipt", over.name, "docstatus") == 0,
+    )
+
+    # 3. Exactly at the limit: accepted (positive control on the boundary itself).
+    item3 = _p6_item(is_stock_item=0)
+    po3 = _p6_po(item3, 4, company)
+    exact = _p6_receipt(item3, 4, po3, po3.items[0].name, company)
+    exact.insert()
+    exact.submit()
+    _check(
+        "over-receipt guard: a non-stock receipt exactly at the ordered qty is accepted "
+        "(positive control on the boundary)",
+        exact.docstatus == 1,
+    )
+
+    # 4. A configured item-level allowance: inside tolerance accepted, outside refused.
+    item4 = _p6_item(is_stock_item=0, allowance=10)
+    po4 = _p6_po(item4, 10, company)
+    po4_item_name = po4.items[0].name
+    within_allowance = _p6_receipt(item4, 11, po4, po4_item_name, company)
+    within_allowance.insert()
+    within_allowance.submit()
+    _check(
+        "over-receipt guard: a receipt within a configured 10% item allowance (11 vs "
+        "10 ordered) is accepted",
+        within_allowance.docstatus == 1,
+    )
+
+    outside_allowance = _p6_receipt(item4, 1, po4, po4_item_name, company)  # totals 12 vs 10
+    outside_message = _throws_message(
+        "over-receipt guard: a further receipt taking the total to 20% over (outside "
+        "the configured 10% allowance) is refused",
+        outside_allowance.submit,
+    )
+    _check(
+        "over-receipt guard: that refusal names the configured allowance",
+        "10.0%" in outside_message,
+    )
+
+    # 5. A stock-item over-receipt is still refused — by CORE, not by this hook.
+    stock_item = _p6_item(is_stock_item=1)
+    po5 = _p6_po(stock_item, 2, company, warehouse=warehouse)
+    stock_over = _p6_receipt(stock_item, 5, po5, po5.items[0].name, company, warehouse=warehouse)
+    stock_over.insert()
+    core_message = _throws_message(
+        "over-receipt guard: a stock-item over-receipt (5 vs 2 ordered) is still refused",
+        stock_over.submit,
+    )
+    _check(
+        "over-receipt guard: that refusal is core's own — this app's marker is absent, "
+        "so the hook did not fire for a stock item",
+        _OVER_RECEIPT_MARKER not in core_message,
+    )
+
+    # 6. A receipt with no purchase_order reference at all: untouched.
+    item6 = _p6_item(is_stock_item=0)
+    no_po = frappe.get_doc(
+        {
+            "doctype": "Purchase Receipt",
+            "company": company,
+            "supplier": _p6_supplier(),
+            "posting_date": today(),
+            "items": [{"item_code": item6, "qty": 100, "rate": 10}],
+        }
+    )
+    no_po.insert()
+    no_po.submit()
+    _check(
+        "over-receipt guard: a receipt with no purchase_order reference at all is "
+        "untouched (positive control — zero-cost path)",
+        no_po.docstatus == 1,
+    )
+
+
+# -- Dashboard and Notification fixtures -------------------------------------
+
+
+def _dashboard_fixture_checks() -> None:
+    _check(
+        "dashboard: the Hospital Ops Dashboard exists",
+        bool(frappe.db.exists("Dashboard", "Hospital Ops")),
+    )
+    card_names = [
+        "Open Quick Captures",
+        "Waiting For (Status Waiting)",
+        "Draft CSR Fund Events",
+        "Active Research Studies",
+    ]
+    for card in card_names:
+        _check(f"dashboard: Number Card '{card}' exists", bool(frappe.db.exists("Number Card", card)))
+
+    _check(
+        "dashboard: the Quick Captures Opened chart exists",
+        bool(frappe.db.exists("Dashboard Chart", "Quick Captures Opened")),
+    )
+
+    if frappe.db.exists("Dashboard", "Hospital Ops"):
+        dashboard = frappe.get_doc("Dashboard", "Hospital Ops")
+        linked = {row.card for row in dashboard.cards}
+        _check(
+            "dashboard: the Hospital Ops Dashboard links all four Number Cards",
+            set(card_names) <= linked,
+        )
+        _check(
+            "dashboard: the Hospital Ops Dashboard links the Quick Captures Opened chart",
+            any(row.chart == "Quick Captures Opened" for row in dashboard.charts),
+        )
+
+
+def _notification_fixture_checks() -> None:
+    """Existence and condition-string checks — not delivery (no SMTP on this
+    site by design; see ADR note in README and notification_setup.py)."""
+    expected = {
+        "Waiting For Follow-up Arrived": ("Waiting For", 'doc.status=="Waiting"'),
+        "CSR Reporting Obligation Due Soon": ("CSR Reporting Obligation", "not doc.submitted_on"),
+        "Research Ethics Submission Expiring": (
+            "Research Ethics Submission",
+            'doc.decision=="Approved"',
+        ),
+        "Hospital Sign Inspection Due": ("Hospital Sign", ""),
+    }
+    for name, (doctype, condition) in expected.items():
+        exists = frappe.db.exists("Notification", name)
+        _check(f"notification: {name} exists", bool(exists))
+        if not exists:
+            continue
+        row = frappe.db.get_value(
+            "Notification",
+            name,
+            ["document_type", "channel", "enabled", "condition"],
+            as_dict=True,
+        )
+        _check(f"notification: {name} targets {doctype}", row.document_type == doctype)
+        _check(
+            f"notification: {name} is channel System Notification (SMTP deliberately "
+            "unconfigured on this site)",
+            row.channel == "System Notification",
+        )
+        _check(f"notification: {name} is enabled", bool(row.enabled))
+        _check(
+            f"notification: {name} carries the expected condition, so a resolved/decided "
+            "record does not fire",
+            (row.condition or "") == condition,
+        )
