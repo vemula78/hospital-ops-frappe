@@ -1,0 +1,93 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:WEBP-{#####}",
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "page_title",
+  "url_path",
+  "column_break_head",
+  "owner_name",
+  "section_steps",
+  "steps",
+  "section_notes",
+  "notes"
+ ],
+ "fields": [
+  {
+   "fieldname": "page_title",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Page Title",
+   "reqd": 1
+  },
+  {
+   "description": "The path on the site, if it has one. Absent means it is not yet public.",
+   "fieldname": "url_path",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "URL Path"
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Who owns the words, not who owns the CMS account.",
+   "fieldname": "owner_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Owner Name"
+  },
+  {
+   "description": "The publication trail. Steps are added only by record_step(), which refuses a Publication while anything is missing and names what. The page's status is the latest step — there is no status column, so recording a late approval moves the page without anybody editing a second field.",
+   "fieldname": "section_steps",
+   "fieldtype": "Section Break",
+   "label": "Workflow"
+  },
+  {
+   "fieldname": "steps",
+   "fieldtype": "Table",
+   "label": "Steps",
+   "options": "Hospital Web Page Step"
+  },
+  {
+   "fieldname": "section_notes",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Hospital Ops",
+ "name": "Hospital Web Page",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "page_title",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}
