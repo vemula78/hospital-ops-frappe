@@ -31,6 +31,12 @@ inbox is emptying it, not admiring the newest arrival.
   marks the capture Processed in the same call, so the pair can never be left
   half-done. Refuses on anything not currently `Open` (already `Processed`
   or `Discarded`).
+- `discard(name)` — whitelisted. Marks a capture Discarded. Added during the
+  second Codex audit round: once the P3-2 re-fix made a plain save unable
+  to move `status` at all without a flagged path (see below), the
+  previously unremarkable "edit status to Discarded and save" workflow
+  needed a sanctioned path of its own — not part of the original brief, but
+  required to keep discarding possible at all once that fix landed.
 
 **Waiting For** (`WF-.#####`) — the delegation register: who owes me what.
 `waiting_on` is a `Contact`. `follow_up_on` defaults to `promised_on` when
@@ -70,26 +76,12 @@ cover both the negative case and its positive control for each invariant.
 An independent Codex audit over those two commits found four issues, all
 fixed in place:
 
-- **P2-1 / P2-2 — TOCTOU on the "does it already have one" checks.** Two
-  concurrent calls to `process_into_todo` could both read `status = "Open"`
-  before either wrote back, both insert a ToDo, and both mark the capture
-  Processed; the equivalent was true of `create_todo_from_decision` racing
-  on a decision row's `todo` field. Both methods now take a row lock with
-  `frappe.db.get_value(..., for_update=True)` *before* the re-check, and
-  read the value that check acts on from that locked read (quick_capture.py)
-  or from a `doc.reload()` taken after the lock (meeting_record.py) — not
-  from a doc loaded earlier. A second concurrent call blocks on the lock
-  until the first commits, then sees the post-write state and is refused.
-  **Concurrency guarantee, tested by code review, not by driving genuine
-  concurrency**: `bench execute` runs one request per process on this bench,
-  so there is no practical way to fire two overlapping calls in the test
-  environment. `tests_runner.py`'s `_p2_lock_order_checks` instead asserts,
-  by reading the actual function source, that the `for_update=True` locked
-  read appears before the `ToDo` insert in both methods — a proxy for "the
-  lock is taken before the window it is meant to close," not a substitute
-  for a real concurrency test. If this ever needs a real test, it needs two
-  separate DB connections issuing overlapping transactions, which the
-  request-per-process test harness here cannot drive.
+- **P2-1 — TOCTOU in `process_into_todo`.** Two concurrent calls could both
+  read `status = "Open"` before either wrote back, both insert a ToDo, and
+  both mark the capture Processed. Fixed: a locking read,
+  `frappe.db.get_value("Quick Capture", name, "status", for_update=True)`,
+  taken before the re-check, and the re-check acts on that locked value —
+  not the doc loaded earlier. **CLOSED**, confirmed by re-audit.
 - **P3-1 — existence oracle.** `frappe.get_doc` on a missing name raises
   `DoesNotExistError`; `frappe.has_permission(..., throw=True)` on an
   existing-but-unauthorized one raises `PermissionError` — distinguishable,
@@ -98,17 +90,67 @@ fixed in place:
   raises the identical `PermissionError` with the identical message for
   both cases, so a caller cannot tell "does not exist" from "not allowed to
   touch." The permission checks it wraps were already correct and are
-  unchanged.
-- **P3-2 — the processed pointer was only UI-read-only.** `read_only` in the
-  doctype JSON is a form hint, not server-side enforcement; a direct REST
-  save could overwrite `processed_into_doctype`/`processed_into` or flip
-  `status` back to `Open`. `QuickCapture.validate()` now: (a) restricts
-  `processed_into_doctype` to `("ToDo", "Task", "Waiting For", "Meeting
-  Record")`; (b) once the *stored* (database) status is `Processed` or
-  `Discarded`, refuses any change to `status`/`processed_into_doctype`/
-  `processed_into` unless `self.flags.via_process_method` is set — and that
-  flag is set only inside `process_into_todo`, immediately before its own
-  `save()`. Other fields (e.g. `capture_text`) stay freely editable.
+  unchanged. **CLOSED**, confirmed by re-audit.
+- **P2-2 — TOCTOU in `create_todo_from_decision`, still open after the first
+  fix.** Locking the *parent* row and then re-reading `row.todo` via a plain
+  `doc.reload()` was not enough: under MariaDB/InnoDB REPEATABLE READ, a
+  non-locking read taken after a lock can still be served from the
+  transaction's pre-lock snapshot, so two concurrent callers could still
+  both see `todo` empty. Fixed by locking the *exact row being raced*:
+  `frappe.db.get_value("Meeting Decision", row_name, "todo",
+  for_update=True)`. A `FOR UPDATE` read always returns the latest
+  *committed* version, and the already-has-a-ToDo refusal is now driven by
+  that value, not by the doc's in-memory child row. The parent write (`doc.
+  save()`) still happens afterwards through the doc as before.
+  **Concurrency guarantee, tested by code review, not by driving genuine
+  concurrency**: `bench execute` runs one request per process on this
+  bench, so there is no practical way to fire two overlapping calls in the
+  test environment. `tests_runner.py`'s `_p22_lock_call_pattern_check`
+  monkeypatches `frappe.db.get_value` to record the actual call a second
+  concurrent-shaped call makes, and asserts it is exactly
+  `get_value("Meeting Decision", row_name, "todo", for_update=True)` and
+  that the refusal names the ToDo that call found — not merely that some
+  `for_update=True` string appears before the insert in the source. If this
+  ever needs a real test, it needs two separate DB connections issuing
+  overlapping transactions, which the request-per-process test harness here
+  cannot drive.
+- **P3-2 — the processed pointer was only UI-read-only, and the first fix
+  was incomplete.** `read_only` in the doctype JSON is a form hint, not
+  server-side enforcement. The first fix only guarded *updates* once the
+  *stored* status was already `Processed`/`Discarded`, which left two
+  holes: (a) a document could be **inserted** already "born" `Processed`
+  with a forged pointer, never touching `process_into_todo`; (b) an
+  existing `Open` row's status could be direct-saved straight to
+  `Processed` with a forged pointer, because the guard only fired once the
+  stored status was already terminal. `QuickCapture.validate()` now runs
+  one of two complete branches: on insert, `status` must be `Open` (or
+  unset) and both `processed_into*` fields empty; on update, *any* change
+  to `status`/`processed_into_doctype`/`processed_into` relative to the
+  currently stored row is refused — not only when the stored status happens
+  to already be terminal. Both branches are skipped only when
+  `self.flags.via_process_method` is set, which happens only inside
+  `process_into_todo`, immediately before its own `save()`. The
+  `processed_into_doctype` allow-list (`"ToDo"`, `"Task"`, `"Waiting For"`,
+  `"Meeting Record"`) is checked unconditionally, flag or not, so the
+  flag-guarded path cannot be used to smuggle in an unlisted doctype. Other
+  fields (e.g. `capture_text`) stay freely editable throughout.
+
+  **`frappe.client.set_value` verdict**: the second-round audit raised, as a
+  separate claim, that `frappe.client.set_value` (the REST-whitelisted
+  endpoint) bypasses controller `validate()`. Checked against this
+  container's actual installed source, `apps/frappe/frappe/client.py`
+  (v16.31): `set_value()` does `doc = frappe.get_doc(doctype, name)` (line
+  207 for a non-child doctype), `doc.update(values)` (line 208), then
+  `doc.save()` (line 215) — `save()` is exactly what runs `validate()`, so
+  **this claim is incorrect for `frappe.client.set_value`**. It is
+  `frappe.db.set_value` (a raw `UPDATE`, not REST-whitelisted, not called
+  anywhere in this app) that bypasses the controller — the same distinction
+  `staff_credential.py`'s `verify()` in the sibling app documents for its
+  own use of `frappe.db.set_value`. `tests_runner.py`'s
+  `_set_value_bypass_check` confirms this on the live site: calling
+  `frappe.client.set_value("Quick Capture", <processed capture>, "status",
+  "Open")` is refused by the P3-2 guard above, exactly as a normal
+  `doc.save()` would be.
 
 **Known obstruction on the shared evaluation site**: `bench run-tests` for
 `Waiting For` and `Meeting Record` fails during `IntegrationTestCase`'s own
@@ -123,18 +165,21 @@ this app, and present with or without `--skip-before-tests` (that flag only
 skips erpnext's own `before_tests` hook, not this per-doctype fixture walk).
 `Quick Capture` has no such Link fields and runs cleanly under `run-tests`.
 `hospital_ops/hospital_ops/tests_runner.py` re-checks the same invariants
-(the original 15 — 6 Quick Capture + 5 Waiting For + 4 Meeting Record, each
-negative case paired with its positive control — plus 8 more added for the
-Codex audit fixes above: 3 for the P3-1 existence oracle, 3 for the P3-2
-state guard, 2 for the P2-1/P2-2 lock-order code check) with plain
-assertions instead of `IntegrationTestCase`, which never triggers that walk,
-rolling back regardless of outcome:
+(the original 15 plus one more for the new `discard()` method — 7 Quick
+Capture + 5 Waiting For + 4 Meeting Record, each negative case paired with
+its positive control — plus 16 more added across the two audit rounds: 3
+for the P3-1 existence oracle, 3 for the first-round P3-2 guard, 2 for the
+first-round P2 lock-order source check, 3 for the second-round P3-2 complete
+state machine, 2 for the `frappe.client.set_value` verdict, and 3 for the
+second-round P2-2 exact lock call pattern) with plain assertions instead of
+`IntegrationTestCase`, which never triggers that walk, rolling back
+regardless of outcome:
 
 ```bash
 bench --site frontend execute hospital_ops.hospital_ops.tests_runner.run_phase2_tests
 ```
 
-All 23 passed. The real `test_*.py` suites remain the primary tests and
+All 32 passed. The real `test_*.py` suites remain the primary tests and
 should be re-run with `bench run-tests` once the shared site's Fiscal Year
 conflict is resolved by whoever owns that configuration.
 

@@ -29,12 +29,14 @@ outcome, pass or fail.
 import inspect
 
 import frappe
+from frappe.client import set_value as client_set_value
 from frappe.utils import add_days, today
 
 from hospital_ops.hospital_ops.doctype.meeting_record.meeting_record import (
     create_todo_from_decision,
 )
 from hospital_ops.hospital_ops.doctype.quick_capture.quick_capture import (
+    discard,
     process_into_todo,
 )
 from hospital_ops.hospital_ops.doctype.waiting_for.waiting_for import log_follow_up
@@ -67,7 +69,10 @@ def run_phase2_tests() -> None:
         _meeting_record_checks()
         _p31_existence_oracle_checks()
         _p32_state_guard_checks()
+        _p32_full_state_machine_checks()
+        _set_value_bypass_check()
         _p2_lock_order_checks()
+        _p22_lock_call_pattern_check()
     finally:
         frappe.db.rollback()
 
@@ -100,8 +105,11 @@ def _quick_capture_checks() -> None:
     )
 
     discarded = frappe.get_doc(
-        {"doctype": "Quick Capture", "capture_text": "A stray thought", "status": "Discarded"}
+        {"doctype": "Quick Capture", "capture_text": "A stray thought"}
     ).insert()
+    discard(discarded.name)
+    discarded.reload()
+    _check("quick_capture: discard() marks the capture Discarded", discarded.status == "Discarded")
     _expect_throws(
         "quick_capture: processing a Discarded capture is refused",
         lambda: process_into_todo(discarded.name),
@@ -292,6 +300,136 @@ def _p2_lock_order_checks() -> None:
     lock_at2 = meeting_record_src.find("for_update=True")
     insert_at2 = meeting_record_src.find('"doctype": "ToDo"')
     _check(
-        "p2-2: create_todo_from_decision locks the parent row (for_update) before inserting the ToDo",
+        "p2-2: create_todo_from_decision locks a row (for_update) before inserting the ToDo",
         lock_at2 != -1 and insert_at2 != -1 and lock_at2 < insert_at2,
+    )
+    _check(
+        "p2-2: the locked read targets Meeting Decision, not just the parent",
+        'frappe.db.get_value("Meeting Decision"' in meeting_record_src,
+    )
+
+
+def _p32_full_state_machine_checks() -> None:
+    """Codex re-audit of P3-2: the original guard only fired once the
+    *stored* status was already Processed/Discarded, which left two holes —
+    a document could be inserted already "born" Processed with a forged
+    pointer, and an existing Open row could be direct-saved straight to
+    Processed with a forged pointer, never touching process_into_todo at
+    all. Both are covered here, plus the end-to-end positive control.
+    """
+    _expect_throws(
+        "p3-2: inserting a capture already Processed with a forged pointer is refused",
+        lambda: frappe.get_doc(
+            {
+                "doctype": "Quick Capture",
+                "capture_text": "Forged at birth",
+                "status": "Processed",
+                "processed_into_doctype": "ToDo",
+                "processed_into": "SOME-FAKE-TODO",
+            }
+        ).insert(),
+    )
+
+    doc = frappe.get_doc(
+        {"doctype": "Quick Capture", "capture_text": "Try to self-process via direct save"}
+    ).insert()
+    doc.status = "Processed"
+    doc.processed_into_doctype = "ToDo"
+    doc.processed_into = "SOME-FAKE-TODO"
+    _expect_throws(
+        "p3-2: a direct save forging Open -> Processed (never touching process_into_todo) is refused",
+        doc.save,
+    )
+
+    fresh = frappe.get_doc(
+        {"doctype": "Quick Capture", "capture_text": "Still works end to end"}
+    ).insert()
+    result = process_into_todo(fresh.name)
+    fresh.reload()
+    _check(
+        "p3-2: process_into_todo still processes a capture end-to-end (positive control)",
+        fresh.status == "Processed" and fresh.processed_into == result["todo"],
+    )
+
+
+def _set_value_bypass_check() -> None:
+    """Verifies (rather than assumes) whether frappe.client.set_value — the
+    REST-whitelisted endpoint, distinct from frappe.db.set_value — bypasses
+    controller validate().
+
+    Read from the container's actual v16 source, apps/frappe/frappe/
+    client.py: set_value() does `doc = frappe.get_doc(doctype, name)` then
+    `doc.update(values)` then `doc.save()` (client.py:207-215 in this
+    container's checkout) — save() is exactly what runs validate(), so this
+    endpoint does NOT bypass it. Only frappe.db.set_value (a raw UPDATE, not
+    REST-whitelisted, not used anywhere in this app) bypasses the
+    controller. This check proves that on the actual installed version
+    rather than trusting the source reading alone.
+    """
+    doc = frappe.get_doc(
+        {"doctype": "Quick Capture", "capture_text": "For the set_value bypass check"}
+    ).insert()
+    process_into_todo(doc.name)
+    doc.reload()
+    _check("set_value: capture is Processed before the attempt (setup)", doc.status == "Processed")
+
+    _expect_throws(
+        "set_value: frappe.client.set_value cannot flip a Processed capture's status "
+        "(it calls doc.save(), which runs validate() — confirmed against this container's "
+        "apps/frappe/frappe/client.py, not assumed)",
+        lambda: client_set_value("Quick Capture", doc.name, "status", "Open"),
+    )
+
+
+def _p22_lock_call_pattern_check() -> None:
+    """Codex re-audit of P2-2: not just "some for_update=True appears before
+    the insert in the source" but the *actual* call pattern — a locking
+    read of frappe.db.get_value("Meeting Decision", row_name, "todo",
+    for_update=True), and that the refusal is driven by the value that read
+    returned, not by a stale doc/row snapshot.
+    """
+    meeting = frappe.get_doc(
+        {
+            "doctype": "Meeting Record",
+            "meeting_title": "P2-2 lock call pattern",
+            "held_on": today(),
+            "decisions": [{"decision": "Check the lock call pattern"}],
+        }
+    ).insert()
+    row_name = meeting.decisions[0].name
+
+    first = create_todo_from_decision(meeting.name, row_name)
+
+    calls = []
+    original_get_value = frappe.db.get_value
+
+    def _recording_get_value(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original_get_value(*args, **kwargs)
+
+    frappe.db.get_value = _recording_get_value
+    try:
+        try:
+            create_todo_from_decision(meeting.name, row_name)
+            second_error_message = None
+        except frappe.ValidationError as exc:
+            second_error_message = str(exc)
+    finally:
+        frappe.db.get_value = original_get_value
+
+    locking_call_on_child = any(
+        len(args) >= 3
+        and args[0] == "Meeting Decision"
+        and args[1] == row_name
+        and args[2] == "todo"
+        and kwargs.get("for_update") is True
+        for args, kwargs in calls
+    )
+    _check(
+        "p2-2: the second call issues get_value(\"Meeting Decision\", row_name, \"todo\", for_update=True)",
+        locking_call_on_child,
+    )
+    _check(
+        "p2-2: the refusal names the exact ToDo the locked read found",
+        second_error_message is not None and first["todo"] in second_error_message,
     )

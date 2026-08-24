@@ -19,16 +19,6 @@ def create_todo_from_decision(name: str, row_name: str) -> dict:
     """
     doc = get_doc_for_action("Meeting Record", name, ptype="write")
 
-    # Lock the parent row before reading the decision row's todo field below
-    # (Codex audit, P2-2): without this, two concurrent calls for the same
-    # row can both read an empty `todo`, both insert a ToDo, and both stamp
-    # the row — leaving one of the two ToDos orphaned. The read below takes
-    # the row lock; a second concurrent call blocks here until the first
-    # call's transaction commits, and the reload afterwards then sees that
-    # commit's `todo` rather than the stale value read before the lock.
-    frappe.db.get_value("Meeting Record", name, "modified", for_update=True)
-    doc.reload()
-
     row = next((d for d in doc.decisions if d.name == row_name), None)
     if row is None:
         frappe.throw(
@@ -36,9 +26,19 @@ def create_todo_from_decision(name: str, row_name: str) -> dict:
             title=_("Meeting Record"),
         )
 
-    if row.todo:
+    # Lock the exact row being raced, not the parent (Codex re-audit,
+    # P2-2): locking the parent and then re-reading `row.todo` via a plain
+    # `doc.reload()` is not enough — under MariaDB/InnoDB REPEATABLE READ, a
+    # non-locking read taken after the lock can still be served from the
+    # transaction's pre-lock snapshot, so two concurrent callers could both
+    # still see `todo` empty. A `FOR UPDATE` read always returns the latest
+    # *committed* version and locks precisely the "Meeting Decision" row in
+    # question, so a second concurrent call blocks here until the first
+    # commits, then sees that commit's `todo` rather than a stale snapshot.
+    locked_todo = frappe.db.get_value("Meeting Decision", row_name, "todo", for_update=True)
+    if locked_todo:
         frappe.throw(
-            _("A ToDo ({0}) already exists for this decision.").format(row.todo),
+            _("A ToDo ({0}) already exists for this decision.").format(locked_todo),
             title=_("Meeting Record"),
         )
 

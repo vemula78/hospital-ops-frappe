@@ -3,7 +3,7 @@ from __future__ import annotations
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from hospital_ops.hospital_ops.doctype.quick_capture.quick_capture import process_into_todo
+from hospital_ops.hospital_ops.doctype.quick_capture.quick_capture import discard, process_into_todo
 
 
 class TestQuickCapture(IntegrationTestCase):
@@ -45,8 +45,31 @@ class TestQuickCapture(IntegrationTestCase):
 
     def test_discarded_capture_cannot_be_processed(self):
         doc = self._new_capture()
-        doc.status = "Discarded"
-        doc.save()
+        discard(doc.name)
+        doc.reload()
+        self.assertEqual(doc.status, "Discarded")
 
         with self.assertRaises(frappe.ValidationError):
             process_into_todo(doc.name)
+
+    def test_direct_save_cannot_change_status_or_processed_into(self):
+        # Codex re-audit, P3-2: a plain save can no longer move status or
+        # forge a processed_into pointer at all, on either a fresh insert or
+        # an existing row — only process_into_todo/discard may.
+        with self.assertRaises(frappe.ValidationError):
+            frappe.get_doc(
+                {
+                    "doctype": "Quick Capture",
+                    "capture_text": "Forged at birth",
+                    "status": "Processed",
+                    "processed_into_doctype": "ToDo",
+                    "processed_into": "SOME-FAKE-TODO",
+                }
+            ).insert()
+
+        doc = self._new_capture()
+        doc.status = "Processed"
+        doc.processed_into_doctype = "ToDo"
+        doc.processed_into = "SOME-FAKE-TODO"
+        with self.assertRaises(frappe.ValidationError):
+            doc.save()
