@@ -34,38 +34,44 @@ copy is this repository. Reinstall path: `bench get-app
 https://github.com/vemula78/hospital-ops-frappe --branch main` →
 `bench --site frontend install-app hospital_ops` → restart as above.
 
-## Copying code in: extract at BOTH directory levels
+## Copying code in: a single extract at the app root
 
-This install carries the app content at two levels, and both are load-bearing:
+**Superseded 25-Aug-2026.** This section previously told you to extract the same
+tarball *twice* — once at `apps/hospital_ops/` and again at
+`apps/hospital_ops/hospital_ops/`. That was a workaround for a packaging defect,
+not a property of Frappe. The repository had one directory level too many, so the
+double extract manufactured a duplicate of the whole package inside the module
+directory, and `hospital_ops.hospital_ops.*` had been resolving to that duplicate
+all along.
 
-- `apps/hospital_ops/hospital_ops/` — the Python package. `hospital_ops.hooks`
-  resolves from here, so `hooks.py`, `modules.txt`, `patches.txt` and
-  `__init__.py` must exist at this level.
-- `apps/hospital_ops/hospital_ops/hospital_ops/` — the Frappe *module*
-  directory (it carries the `.frappe` marker). `hospital_ops.hospital_ops.*`
-  resolves from here, and `frappe.get_module_path("Hospital Ops")` points here,
-  so every doctype JSON, the reports and `tests_runner.py` must be at this
-  level.
-
-The repository is flat — `hospital_ops/hospital_ops/` holds both sets — so a
-deploy extracts the same tarball twice:
+The repository layout is now correct — `doctype/`, `report/` and the helper
+modules live in the module directory, which is where
+`frappe.model.sync.sync_for` scans for doctypes. **Extract once, at the app root.**
+Building the archive from anywhere other than the repository root produces a
+near-empty tarball.
 
 ```bash
-tar czf /tmp/app.tgz --no-mac-metadata --exclude='__pycache__' \
-  -C hospital_ops hospital_ops                      # archive root == that flat dir
-scp /tmp/app.tgz azureuser@…:/tmp/app.tgz
-sudo docker cp /tmp/app.tgz frappe_docker-backend-1:/tmp/app.tgz
-sudo docker exec -u frappe frappe_docker-backend-1 sh -c \
-  "cd /home/frappe/frappe-bench/apps/hospital_ops && tar xzf /tmp/app.tgz && \
-   cd hospital_ops && tar xzf /tmp/app.tgz"
+# on the Mac, from the repository root
+git archive --format=tar --prefix=hospital_ops/ HEAD | gzip > /tmp/ho.tar.gz
+scp -P 2222 -i ~/Downloads/sssihms-web-vm2023_key.pem /tmp/ho.tar.gz azureuser@20.219.253.136:/tmp/
+
+# on the VM, for each of the five app containers
+for c in backend queue-short queue-long scheduler websocket; do
+  sudo docker cp /tmp/ho.tar.gz frappe_docker-$c-1:/tmp/
+  sudo docker exec -u frappe -w /home/frappe/frappe-bench/apps frappe_docker-$c-1 sh -c \
+    'rm -rf hospital_ops && tar -xzf /tmp/ho.tar.gz && \
+     cd /home/frappe/frappe-bench && env/bin/pip install -q -e apps/hospital_ops'
+done
 ```
 
-Extracting at only the deeper level fails `bench migrate` with
-`ModuleNotFoundError: No module named 'hospital_ops.hooks'`; extracting at only
-the shallower one leaves the new doctypes invisible to `migrate`, which then
-reports success having synced nothing. Both symptoms were hit on 24-Aug-2026.
-Use `--no-mac-metadata` (or delete `._*` afterwards) — macOS `tar` otherwise
-scatters AppleDouble files through the app directory.
+Then `bench --site <site> migrate --skip-search-index`, and restart in the order
+above. Confirm afterwards that no duplicate remains:
+
+```bash
+sudo docker exec frappe_docker-backend-1 sh -c \
+  'test -d /home/frappe/frappe-bench/apps/hospital_ops/hospital_ops/hospital_ops/hospital_ops \
+   && echo "DUPLICATE PRESENT" || echo clean'
+```
 
 ## Verification after any deploy
 
