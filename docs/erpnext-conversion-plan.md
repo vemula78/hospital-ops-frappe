@@ -83,6 +83,20 @@ supplies the CRUD, list views, permissions, comments and change history.
 | `review.ts`                               | A Page or Script Report, not a doctype                                                                                                                                                                  |
 | `assistant.ts`                            | Custom page; lowest priority                                                                                                                                                                            |
 
+**Correction from Phase 5 (24-Aug-2026).** This table said the signage stage
+gates "are exactly what Frappe Workflow expresses", and the website row
+proposed a Workflow too. They were built as controller logic instead, and the
+reason is worth recording: Frappe Workflow moves a *stored status field* along
+transitions. Every one of these gates is a check against a **set** of rows —
+"has every prerequisite step passed **for the current design**", "is the
+approval strictly after the review of the latest draft", "does every
+requirement have a passing UAT result newer than the day it was agreed" — and
+none of those is a transition between two values of a column. Worse, a stored
+status is precisely what the reference had to hand-downgrade when a design was
+superseded. The gates live in `before_submit`/whitelisted methods under a row
+lock, and the status is derived on read. Frappe Workflow remains the right tool
+for the ethics decision in Phase 4, which genuinely is one field moving once.
+
 ### Bucket 3 — Drop deliberately, and say so
 
 Each of these was built for a threat model that a single-user internal tool on
@@ -144,7 +158,7 @@ big-bang this.
 | **2** | Small custom doctypes: Waiting For, Capture/Inbox, Meetings                                                                         | Fast, restores the daily-driver workflow                                                                                          |
 | **3** | **CSR**, using submittable doctypes for the ledger and `trust_compliance` as the template — **done, 24-Aug-2026** (see below)                                         | The largest custom build; do it once the framework is familiar                                                                    |
 | **4** | Research + ethics workflow — **done, 24-Aug-2026** (see README)                                                                     | Self-contained                                                                                                                    |
-| **5** | Build & Publish: Signage, Website, Software                                                                                         | Self-contained; workflow-engine heavy                                                                                             |
+| **5** | Build & Publish: Signage, Website, Software — **done, 24-Aug-2026** (see README)                                                    | Self-contained; workflow-engine heavy                                                                                             |
 | **6** | Reports, dashboards, weekly review, notification config                                                                             | Cheap once the data model exists                                                                                                  |
 | **7** | Decommission the Next.js app and `ops.sssihms.org`                                                                                  | Only after 1–6 are in real use                                                                                                    |
 

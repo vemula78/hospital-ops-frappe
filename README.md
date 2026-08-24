@@ -524,6 +524,142 @@ standing parity across a set of studies, and the §4.3 scan with its positive
 control. `run_phase2_tests` (32/32) and `run_phase3_tests` (111/111) both
 re-ran clean after this phase's migration, confirming no regression.
 
+### Phase 5 — Build & Publish (signage, website, software)
+
+A port of the Next.js application's `signage.ts` (1,104 ln), `website.ts` and
+`software.ts` (1,046 ln) — **done, 24-Aug-2026**. Nine doctypes and one report,
+module `Hospital Ops`, `System Manager` only. This is the workflow-gate phase:
+the value of these modules is that steps happen in the right order and the
+record refuses to lie about it.
+
+`Web Page` is owned by frappe core, so every name here is distinctive and each
+was checked free before use (with a positive control — the check finds `Web
+Page`).
+
+| Doctype | Naming | Kind | What it is |
+| --- | --- | --- | --- |
+| Hospital Sign | `SIGN-#####` | | The register (SIG-001). No status column |
+| Hospital Sign Design | `SGND-#####` | | Versioned print-ready artwork (SIG-003) |
+| Hospital Sign Event | `SGNE-#####` | submittable | The gated workflow trail (SIG-002) |
+| Hospital Sign Accessibility Check | `SGNA-#####` | | Six criteria, six verdicts (SIG-005) |
+| Hospital Web Page | `WEBP-#####` | | A page and its publication trail (WEB-002) |
+| Hospital Web Page Step | — | child | One step of that trail |
+| Software Project Record | `SOFT-#####` | | A project, its backlog and its release |
+| Software Requirement Item | — | child | One agreed requirement (SFT-002) |
+| Software UAT Result | `SUAT-#####` | | One dated verdict (SFT-005) |
+
+`build_publish.py` is the single place any of this is derived. The controllers,
+the whitelisted methods and the report all call it, for the same reason
+`csr_financials.totals_from_kind_rows` is the only place ledger rows become
+figures: a second implementation is how two views of the same record disagree,
+and here the second view is the one somebody reads before printing four hundred
+signs.
+
+**Signage.** A sign's status is derived from its *submitted* events against its
+**current** design — `Planned` / `In Production` / `Installed`, computed on
+read. Superseding a design therefore resets everything by itself. This is the
+one place the port improves on the reference: there, `sign.status` was stored,
+and `addDesign` had to hand-downgrade `status`, `installedOn` and
+`photographDocumentId` inside the supersede transaction, because a supersede has
+no workflow event of its own for a *backward* move to derive from. Computing it
+on read removes the second writer entirely.
+
+`add_design(name, …)` locks the sign, assigns `version_number` as `max + 1`
+(a read-then-write against a count, which no unique index can substitute for),
+and requires a `supersede_reason` whenever there is a live design to replace.
+Its notice says the thing that matters: **approvals do not carry forward** —
+content verification and approval are needed again for the new version.
+
+`Hospital Sign Event` is submittable and append-only exactly like `CSR Fund
+Event`: `before_cancel`/`on_cancel` refuse, `on_trash` refuses for a submitted
+row, a draft deletes normally. Only `docstatus = 1` counts towards any gate.
+On submit, under a `FOR UPDATE` read of the sign and with every subsequent read
+also locking:
+
+- **a note is required** on `Failed` and on `Waived` (in `validate()`, so a
+  draft cannot carry the omission forward either);
+- **prerequisites must have cleared for the current design** — Content
+  Verification → Approval → Print Proof → Production → Installation — and the
+  refusal names each missing step with the reason it is missing. A `Waived`
+  outcome clears a gate the way a pass does, carrying its reason;
+- **the order is chronological too** (`sequenceViolation`, ported with its
+  prerequisite map intact): a step dated before the step it depends on is
+  refused. Existence alone is not enough — an approval dated 10 July and a
+  production event dated 1 July both pass an existence check and are, once
+  recorded, indistinguishable from a correctly sequenced pair. Same-day is
+  accepted; only strictly-before is refused;
+- **`not_current_design`**: a *passing* Production or Installation naming a
+  superseded design is refused outright. A non-passing event on an old design
+  stays recordable — the record may need to say that version 1 failed.
+
+`Hospital Sign Accessibility Check` requires a note on `Not Met` and on `Not
+Applicable` (the verdict that silently passes a sign) and refuses a second
+verdict for the same sign, design, criterion and day: it would silently
+overwrite the first, so the refusal says to record the correction on the day it
+was re-checked. All six criteria are always reported, and an unjudged one reads
+`Not Checked`, never `Met`.
+
+**Website.** Publication state is the latest step, derived. `record_step` locks
+the page, re-reads the steps with `FOR UPDATE`, and refuses a `Publication`
+while anything is missing, naming it. `missing_for_publication` is ported
+exactly and bounds every lookup to the publication's own date, so a step
+recorded later cannot retroactively authorise it:
+
+- a draft has to exist;
+- the review must be **on or after** the latest draft — a later draft means
+  the content changed and nobody has reviewed what now stands;
+- the approval must be **strictly after** the review. Calendar dates have no
+  time component, so a review and an approval sharing a date are unordered as
+  far as this system can observe; `>=` refuses that alongside the plainly
+  reversed case. That is an audit fix on the reference and it is kept.
+
+Steps enter only through `record_step`, guarded in `validate()` against
+`get_doc_before_save()` — additions, edits and deletions all refused. Backdating
+is deliberately **not** refused, matching the reference.
+
+**Software.** `add_requirement`, `record_uat_result` and `record_release` all
+take the same advisory lock on the project row, so a requirement or a result
+cannot commit while a release is in flight, and a release cannot miss one that
+already committed. `record_release` refuses unless **every** requirement has at
+least one passing UAT result dated *after* the day the requirement was agreed —
+a pass against the requirement as it stood before it was agreed tested
+something else. A project with **no** requirements is refused too: nothing to
+test is not the same as everything tested.
+
+`Released` is terminal and is set only by `record_release`, enforced in
+`validate()` across the insert path (a project cannot be born Released) and
+direct saves (neither status nor date can move once released, and setting
+`Released` by hand is refused because it would skip the gate).
+
+**Report — Build and Publish Status.** Every sign with its derived status and
+the blockers of the next gate that has not cleared, every page with what a
+publication would still be missing, every project with how many requirements
+have a passing result. Listings use `frappe.get_list`, not `get_all`.
+
+Verification: `run_phase5_tests`, **109 checks, 0 failures**, everything rolled
+back at the end whatever happens. Every negative carries a positive control,
+and most negatives assert the *content* of the refusal too. Covered: the
+sequence gates and their named blockers; waivers clearing a gate and their
+mandatory note; the chronological order checks in both directions; supersede
+requiring a reason, resetting the chain and dropping the derived status back to
+Planned; `not_current_design` refusing a passing Production on v1 while a
+*failed* one stays recordable; the accessibility duplicate and note rules;
+cancel/trash refusals with a draft delete as the control; the publication gate
+including the same-day review/approval refusal and the next-day acceptance;
+the step and requirement direct-save guards; the release gate, the same-day-as-
+agreed UAT that does not count, one-shot release, and Released as terminal;
+and report/controller parity for all three areas. `run_phase2_tests` (32/32),
+`run_phase3_tests` (111/111) and `run_phase4_tests` (42/42) all re-ran clean
+after this phase's migration.
+
+**Deployment note.** This install carries the app content at *two* directory
+levels — `apps/hospital_ops/hospital_ops/` (from which `hospital_ops.hooks`
+resolves) and `apps/hospital_ops/hospital_ops/hospital_ops/` (from which
+`hospital_ops.hospital_ops.*` and the module's doctype JSONs resolve). A deploy
+must extract the tarball at **both**, or the app half-loads: extracting only at
+the deeper level gives `ModuleNotFoundError: No module named
+'hospital_ops.hooks'` on `bench migrate`. See `docs/operations.md`.
+
 ### Contributing
 
 This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:

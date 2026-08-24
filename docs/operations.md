@@ -34,6 +34,39 @@ copy is this repository. Reinstall path: `bench get-app
 https://github.com/vemula78/hospital-ops-frappe --branch main` →
 `bench --site frontend install-app hospital_ops` → restart as above.
 
+## Copying code in: extract at BOTH directory levels
+
+This install carries the app content at two levels, and both are load-bearing:
+
+- `apps/hospital_ops/hospital_ops/` — the Python package. `hospital_ops.hooks`
+  resolves from here, so `hooks.py`, `modules.txt`, `patches.txt` and
+  `__init__.py` must exist at this level.
+- `apps/hospital_ops/hospital_ops/hospital_ops/` — the Frappe *module*
+  directory (it carries the `.frappe` marker). `hospital_ops.hospital_ops.*`
+  resolves from here, and `frappe.get_module_path("Hospital Ops")` points here,
+  so every doctype JSON, the reports and `tests_runner.py` must be at this
+  level.
+
+The repository is flat — `hospital_ops/hospital_ops/` holds both sets — so a
+deploy extracts the same tarball twice:
+
+```bash
+tar czf /tmp/app.tgz --no-mac-metadata --exclude='__pycache__' \
+  -C hospital_ops hospital_ops                      # archive root == that flat dir
+scp /tmp/app.tgz azureuser@…:/tmp/app.tgz
+sudo docker cp /tmp/app.tgz frappe_docker-backend-1:/tmp/app.tgz
+sudo docker exec -u frappe frappe_docker-backend-1 sh -c \
+  "cd /home/frappe/frappe-bench/apps/hospital_ops && tar xzf /tmp/app.tgz && \
+   cd hospital_ops && tar xzf /tmp/app.tgz"
+```
+
+Extracting at only the deeper level fails `bench migrate` with
+`ModuleNotFoundError: No module named 'hospital_ops.hooks'`; extracting at only
+the shallower one leaves the new doctypes invisible to `migrate`, which then
+reports success having synced nothing. Both symptoms were hit on 24-Aug-2026.
+Use `--no-mac-metadata` (or delete `._*` afterwards) — macOS `tar` otherwise
+scatters AppleDouble files through the app directory.
+
 ## Verification after any deploy
 
 ```bash
@@ -58,9 +91,18 @@ sudo docker exec -u frappe -w /home/frappe/frappe-bench frappe_docker-backend-1 
   bench --site frontend execute hospital_ops.hospital_ops.tests_runner.run_phase4_tests
 ```
 
+Phase 5 (Build & Publish: signage, website, software) has its own suite, 109
+checks, same shape:
+
+```bash
+sudo docker exec -u frappe -w /home/frappe/frappe-bench frappe_docker-backend-1 \
+  bench --site frontend execute hospital_ops.hospital_ops.tests_runner.run_phase5_tests
+```
+
 Then check the public URL, not only the console — see above for why. The
 four that matter after a restart: `/api/method/ping` returns pong, `/login`
-returns 200, `/app/research-study` resolves 200 (following the redirect —
+returns 200, `/app/research-study` and `/app/hospital-sign` resolve 200
+(following the redirect —
 an unauthenticated request 301s to `/login` first, which is expected), and
 `https://sssihms.org` (the hospital's public WordPress site, same VM) still
 returns 200.
