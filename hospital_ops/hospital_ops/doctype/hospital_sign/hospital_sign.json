@@ -1,0 +1,144 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:SIGN-{#####}",
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "reference",
+  "purpose",
+  "column_break_head",
+  "next_inspection_on",
+  "section_location",
+  "building",
+  "floor",
+  "location",
+  "section_physical",
+  "width_mm",
+  "height_mm",
+  "column_break_physical",
+  "material",
+  "languages",
+  "section_notes",
+  "notes"
+ ],
+ "fields": [
+  {
+   "description": "The sign's own identifier, unique across the register.",
+   "fieldname": "reference",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Reference",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "purpose",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Purpose",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "SIG-007: when this sign should next be looked at.",
+   "fieldname": "next_inspection_on",
+   "fieldtype": "Date",
+   "label": "Next Inspection On"
+  },
+  {
+   "description": "Where the sign is. Located by building, floor and place — never by any use on a patient (data boundary, plan §4.3).",
+   "fieldname": "section_location",
+   "fieldtype": "Section Break",
+   "label": "Location"
+  },
+  {
+   "fieldname": "building",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Building"
+  },
+  {
+   "fieldname": "floor",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Floor"
+  },
+  {
+   "fieldname": "location",
+   "fieldtype": "Data",
+   "label": "Location"
+  },
+  {
+   "fieldname": "section_physical",
+   "fieldtype": "Section Break",
+   "label": "Physical"
+  },
+  {
+   "fieldname": "width_mm",
+   "fieldtype": "Int",
+   "label": "Width (mm)"
+  },
+  {
+   "fieldname": "height_mm",
+   "fieldtype": "Int",
+   "label": "Height (mm)"
+  },
+  {
+   "fieldname": "column_break_physical",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "material",
+   "fieldtype": "Data",
+   "label": "Material"
+  },
+  {
+   "description": "Which languages appear on it — the multilingual half of SIG-005.",
+   "fieldname": "languages",
+   "fieldtype": "Data",
+   "label": "Languages"
+  },
+  {
+   "fieldname": "section_notes",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Hospital Ops",
+ "name": "Hospital Sign",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "reference",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}

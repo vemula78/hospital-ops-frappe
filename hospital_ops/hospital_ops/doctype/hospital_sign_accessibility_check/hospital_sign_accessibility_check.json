@@ -1,0 +1,104 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:SGNA-{#####}",
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "sign",
+  "design",
+  "criterion",
+  "column_break_head",
+  "verdict",
+  "checked_on",
+  "section_note",
+  "note"
+ ],
+ "fields": [
+  {
+   "fieldname": "sign",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Sign",
+   "options": "Hospital Sign",
+   "reqd": 1
+  },
+  {
+   "fieldname": "design",
+   "fieldtype": "Link",
+   "label": "Design",
+   "options": "Hospital Sign Design"
+  },
+  {
+   "description": "Six criteria, six separate judgements — a sign can fail exactly one of them, which is why this is a row per criterion rather than one \"accessible\" tick.",
+   "fieldname": "criterion",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Criterion",
+   "options": "Readability\nContrast\nSymbols\nViewing Distance\nMultilingual\nMounting Height",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "A criterion nobody has judged reads Not Checked, never Met. Not Applicable is the verdict that silently passes a sign, so it carries a reason.",
+   "fieldname": "verdict",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Verdict",
+   "options": "Met\nNot Met\nNot Applicable",
+   "reqd": 1
+  },
+  {
+   "default": "Today",
+   "fieldname": "checked_on",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Checked On",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_note",
+   "fieldtype": "Section Break"
+  },
+  {
+   "description": "Required on Not Met and on Not Applicable.",
+   "fieldname": "note",
+   "fieldtype": "Small Text",
+   "label": "Note"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Hospital Ops",
+ "name": "Hospital Sign Accessibility Check",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "checked_on",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

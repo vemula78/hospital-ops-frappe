@@ -1,0 +1,127 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:SGNE-{#####}",
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "sign",
+  "design",
+  "step",
+  "column_break_head",
+  "occurred_on",
+  "outcome",
+  "actor_name",
+  "section_note",
+  "note",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "sign",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Sign",
+   "options": "Hospital Sign",
+   "reqd": 1
+  },
+  {
+   "description": "Which artwork version this step judged. Required: \"approved\" without saying what was approved is how the wrong artwork reaches the print shop (SIG-003).",
+   "fieldname": "design",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Design",
+   "options": "Hospital Sign Design",
+   "reqd": 1
+  },
+  {
+   "description": "SIG-002's order: Content Verification, then Approval, then Print Proof, then Production, then Installation. A step may only pass once every step before it has passed or been waived for this same design.",
+   "fieldname": "step",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Step",
+   "options": "Content Verification\nApproval\nPrint Proof\nProduction\nInstallation",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Today",
+   "description": "A step dated before the step it depends on is refused — the order is chronological, not merely a matter of which rows exist.",
+   "fieldname": "occurred_on",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Occurred On",
+   "reqd": 1
+  },
+  {
+   "description": "Waived is an authorised exception and clears the gate the way a pass does; it stays in the trail carrying its reason, which is why the note is mandatory on anything but a pass.",
+   "fieldname": "outcome",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Outcome",
+   "options": "Passed\nFailed\nWaived",
+   "reqd": 1
+  },
+  {
+   "fieldname": "actor_name",
+   "fieldtype": "Data",
+   "label": "Actor Name"
+  },
+  {
+   "fieldname": "section_note",
+   "fieldtype": "Section Break"
+  },
+  {
+   "description": "Required on Failed and on Waived. A failure or a waiver with no reason is indistinguishable from a step nobody did.",
+   "fieldname": "note",
+   "fieldtype": "Small Text",
+   "label": "Note"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Hospital Sign Event",
+   "print_hide": 1,
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Hospital Ops",
+ "name": "Hospital Sign Event",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "occurred_on",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -1,0 +1,106 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:SGND-{#####}",
+ "creation": "2026-08-24 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "sign",
+  "version_number",
+  "column_break_head",
+  "print_ready",
+  "section_content",
+  "content_text",
+  "section_supersede",
+  "superseded_by",
+  "supersede_reason"
+ ],
+ "fields": [
+  {
+   "fieldname": "sign",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Sign",
+   "options": "Hospital Sign",
+   "reqd": 1
+  },
+  {
+   "description": "Assigned as (highest existing version + 1) by add_design(), under a lock on the sign. Not editable here.",
+   "fieldname": "version_number",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Version Number",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "The print-ready artwork, as an attachment.",
+   "fieldname": "print_ready",
+   "fieldtype": "Attach",
+   "label": "Print Ready"
+  },
+  {
+   "fieldname": "section_content",
+   "fieldtype": "Section Break"
+  },
+  {
+   "description": "The exact words on the sign, so content verification has something to verify.",
+   "fieldname": "content_text",
+   "fieldtype": "Text",
+   "label": "Content Text"
+  },
+  {
+   "fieldname": "section_supersede",
+   "fieldtype": "Section Break",
+   "label": "Supersede"
+  },
+  {
+   "description": "Set only by add_design(): the version that replaced this one. A superseded design stays on the record, marked, rather than being deleted.",
+   "fieldname": "superseded_by",
+   "fieldtype": "Link",
+   "label": "Superseded By",
+   "options": "Hospital Sign Design",
+   "read_only": 1
+  },
+  {
+   "description": "Required whenever a live design is replaced. Whether version 3 fixed a typo or corrected a department name is exactly what nobody can reconstruct later.",
+   "fieldname": "supersede_reason",
+   "fieldtype": "Small Text",
+   "label": "Supersede Reason",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Hospital Ops",
+ "name": "Hospital Sign Design",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
