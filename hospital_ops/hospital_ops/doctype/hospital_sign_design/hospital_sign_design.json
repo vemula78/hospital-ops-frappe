@@ -19,16 +19,18 @@
  ],
  "fields": [
   {
+   "description": "Fixed at insert. A design cannot be re-parented onto another sign: its events were validated against it where it was.",
    "fieldname": "sign",
    "fieldtype": "Link",
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Sign",
    "options": "Hospital Sign",
+   "read_only": 1,
    "reqd": 1
   },
   {
-   "description": "Assigned as (highest existing version + 1) by add_design(), under a lock on the sign. Not editable here.",
+   "description": "Assigned as (highest existing version + 1) by add_design(), under a lock on the sign. Fixed at insert.",
    "fieldname": "version_number",
    "fieldtype": "Int",
    "in_list_view": 1,
@@ -41,20 +43,22 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "The print-ready artwork, as an attachment.",
+   "description": "The print-ready artwork, as an attachment. IMMUTABLE once this version exists — swapping the artwork under an approval would mean the sign produced is not the sign anybody approved. Changed artwork is a new version via add_design().",
    "fieldname": "print_ready",
    "fieldtype": "Attach",
-   "label": "Print Ready"
+   "label": "Print Ready",
+   "read_only": 1
   },
   {
    "fieldname": "section_content",
    "fieldtype": "Section Break"
   },
   {
-   "description": "The exact words on the sign, so content verification has something to verify.",
+   "description": "The exact words on the sign, so content verification has something to verify. IMMUTABLE once this version exists — rewording it after approval would leave the approval attached to text nobody read. Changed wording is a new version via add_design().",
    "fieldname": "content_text",
    "fieldtype": "Text",
-   "label": "Content Text"
+   "label": "Content Text",
+   "read_only": 1
   },
   {
    "fieldname": "section_supersede",
