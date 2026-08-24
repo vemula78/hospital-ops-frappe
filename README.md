@@ -64,6 +64,32 @@ grant alone. Server-side tests (`test_*.py` per doctype, using
 `frappe.tests.IntegrationTestCase` — Frappe v16 renamed `FrappeTestCase`)
 cover both the negative case and its positive control for each invariant.
 
+**Known obstruction on the shared evaluation site**: `bench run-tests` for
+`Waiting For` and `Meeting Record` fails during `IntegrationTestCase`'s own
+fixture bootstrap (`setUpClass` infers the doctype from the test module's
+name and calls `make_test_records`, which walks their Link fields — `Contact`
+for Waiting For, `ToDo` via the decisions child table for Meeting Record —
+and that walk reaches erpnext's Company/Fiscal Year test fixtures). On this
+box a *real* `Fiscal Year 2025-2026` exists from concurrent ERPNext
+configuration work happening on the same site, and it overlaps the synthetic
+`_Test Fiscal Year 2025` erpnext's fixture tries to create — unrelated to
+this app, and present with or without `--skip-before-tests` (that flag only
+skips erpnext's own `before_tests` hook, not this per-doctype fixture walk).
+`Quick Capture` has no such Link fields and runs cleanly under `run-tests`.
+`hospital_ops/hospital_ops/tests_runner.py` re-checks the same 15 invariants
+(6 Quick Capture + 5 Waiting For + 4 Meeting Record assertions, each negative
+case paired with its positive control) with plain assertions instead of
+`IntegrationTestCase`, which never triggers that walk, rolling back
+regardless of outcome:
+
+```bash
+bench --site frontend execute hospital_ops.hospital_ops.tests_runner.run_phase2_tests
+```
+
+All 15 passed. The real `test_*.py` suites remain the primary tests and
+should be re-run with `bench run-tests` once the shared site's Fiscal Year
+conflict is resolved by whoever owns that configuration.
+
 ### Contributing
 
 This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:

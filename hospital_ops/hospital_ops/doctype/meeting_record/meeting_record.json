@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 0,
- "autoname": "format:MTG-.#####",
+ "autoname": "format:MTG-{#####}",
  "creation": "2026-08-24 00:00:00.000000",
  "doctype": "DocType",
  "editable_grid": 1,
