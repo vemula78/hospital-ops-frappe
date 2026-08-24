@@ -82,6 +82,33 @@ app_license = "mit"
 # 	"filters": "hospital_ops.utils.jinja_filters"
 # }
 
+# Fixtures
+# --------
+# Phase 6: the "Hospital Ops" Dashboard, its Number Cards, and the four
+# Notification records for stale-state alerts. Every filter below names the
+# exact records this app owns, by name — never a bare doctype export — so a
+# `bench migrate` on this shared bench (14 other apps) cannot sweep up any
+# other app's Dashboard, Number Card or Notification. Verified before this
+# was written: this bench had zero Dashboard/Number Card/Notification
+# records of these names prior to Phase 6 (see docs/operations.md's
+# verification command).
+fixtures = [
+	{"dt": "Number Card", "filters": [["name", "in", [
+		"Open Quick Captures",
+		"Waiting For (Status Waiting)",
+		"Draft CSR Fund Events",
+		"Active Research Studies",
+	]]]},
+	{"dt": "Dashboard", "filters": [["name", "=", "Hospital Ops"]]},
+	{"dt": "Dashboard Chart", "filters": [["name", "=", "Quick Captures Opened"]]},
+	{"dt": "Notification", "filters": [["name", "in", [
+		"Waiting For Follow-up Arrived",
+		"CSR Reporting Obligation Due Soon",
+		"Research Ethics Submission Expiring",
+		"Hospital Sign Inspection Due",
+	]]]},
+]
+
 # Installation
 # ------------
 
@@ -138,13 +165,19 @@ app_license = "mit"
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+# The ONE sanctioned touch outside this app's own doctypes (Phase 6 build
+# brief). Closes the Phase 1 gate condition: ERPNext's stock-ledger over-
+# receipt guard never runs for non-stock (fixed-asset) Purchase Order lines,
+# so every capital purchase in this workspace could be over-received without
+# a warning. See hospital_ops.purchase_receipt_guard for the full reasoning
+# and docs/erpnext-phase1-gate.md §3.1 for the evidence. Fires for every
+# app's Purchase Receipts, so the handler is written to cost nothing when a
+# document has no non-stock PO-linked row.
+doc_events = {
+	"Purchase Receipt": {
+		"before_submit": "hospital_ops.hospital_ops.purchase_receipt_guard.guard_non_stock_over_receipt",
+	},
+}
 
 # Scheduled Tasks
 # ---------------
