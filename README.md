@@ -8,8 +8,8 @@ You can install this app using the [bench](https://github.com/frappe/bench) CLI:
 
 ```bash
 cd $PATH_TO_YOUR_BENCH
-bench get-app $URL_OF_THIS_REPO --branch n
-bench install-app hospital_ops
+bench get-app https://github.com/vemula78/hospital-ops-frappe --branch main
+bench --site <your-site> install-app hospital_ops
 ```
 
 ### Phase 2 — Quick Capture, Waiting For, Meeting Record
